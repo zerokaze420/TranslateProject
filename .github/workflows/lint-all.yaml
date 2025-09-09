@@ -3,7 +3,7 @@ name: Lint All
 on:
   pull_request:
     branches:
-      - master
+      - master  # 或 main，根据你的默认分支
 
 jobs:
   lint:
@@ -11,28 +11,55 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 必须拉取完整历史，才能比较 base 和 head
 
-      - name: Install zhlint
-        run: yarn global add zhlint
-
-      - name: Lint all Markdown files
+      - name: Lint changed Markdown files
         run: |
           mkdir -p linted_output
           file_list="linted_output/file_list.txt"
           linted_failed_file=$(mktemp)
           echo 0 > "$linted_failed_file"
-          find . -type f -name '*.md' | while read -r file; do
-            set +e
-            zhlint --config "$GITHUB_WORKSPACE"/.scripts/.zhlintrc "$file"
-            if [ $? -ne 0 ]; then
-              echo 1 > "$linted_failed_file"
-              echo "$file" >> "$file_list"
-              output_file="linted_output/report_and_suggested_fixes/$file"
-              mkdir -p "$(dirname "$output_file")"
-              zhlint --config "$GITHUB_WORKSPACE"/.scripts/.zhlintrc "$file" --output="$output_file" > "$output_file.log" 2>&1
-            fi
-            set -e
-          done
+
+          # 获取 PR 中变更的 .md 文件（新增或修改）
+          set +e
+          changed_files=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null | grep '\.md$')
+          git_diff_exit_code=$?
+          set -e
+
+          # 如果 git diff 失败（比如 SHA 不存在），报错并退出
+          if [ $git_diff_exit_code -ne 0 ]; then
+            echo "Error: Failed to compute git diff between base and head. Check if full history is fetched."
+            exit 1
+          fi
+
+          if [ -z "$changed_files" ]; then
+            echo "No Markdown files changed in this PR. Skipping lint."
+          else
+            echo "Changed Markdown files:"
+            echo "$changed_files"
+
+            echo "$changed_files" | while IFS= read -r file; do
+              if [ ! -f "$file" ]; then
+                echo "Warning: File $file not found (may have been deleted). Skipping."
+                continue
+              fi
+
+              set +e
+              zhlint --config "$GITHUB_WORKSPACE"/.scripts/.zhlintrc "$file"
+              lint_exit_code=$?
+              set -e
+
+              if [ $lint_exit_code -ne 0 ]; then
+                echo 1 > "$linted_failed_file"
+                echo "$file" >> "$file_list"
+                output_file="linted_output/report_and_suggested_fixes/$file"
+                mkdir -p "$(dirname "$output_file")"
+                zhlint --config "$GITHUB_WORKSPACE"/.scripts/.zhlintrc "$file" --output="$output_file" > "$output_file.log" 2>&1
+              fi
+            done
+          fi
+
           linted_failed=$(cat "$linted_failed_file")
           rm "$linted_failed_file"
           echo "linted_failed=$linted_failed" >> "$GITHUB_ENV"
