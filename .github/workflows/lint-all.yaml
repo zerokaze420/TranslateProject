@@ -1,7 +1,9 @@
 name: Lint All
 
 on:
-  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
 
 jobs:
   lint:
@@ -43,7 +45,6 @@ jobs:
 
       - name: Check lint errors
         run: |
-          set -e
           if [ "${{ env.linted_failed }}" -ne 0 ]; then
             echo "Linting errors found. Please check the reports and suggested fixes in uploaded artifact."
             exit 1
