@@ -5,13 +5,17 @@ set -e
 
 # Get valid files in git diff (markdown files in sources/)
 get_diff_article_files() {
-  FILES=$(cat $DIFF_JSON | yq e '.files[].path' - )
+  # Get all changed files in the pull request
+  # The git diff command compares the current branch with the base branch
+  CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+
   ARTICLES=''
-  for FILE in $FILES; do
-    if [[ "$FILE" == sources/*.md ]]; then # Seems duplicated with action path filter, keeping for safety
+  for FILE in $CHANGED_FILES; do
+    if [[ "$FILE" == sources/*.md ]]; then
       ARTICLES="$ARTICLES $FILE"
     fi
   done
+
   if [ -z "$ARTICLES" ]; then
     echo "No valid articles found in the PR. Skip checks."
     exit 0
