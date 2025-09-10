@@ -11,9 +11,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # This is crucial for comparing with the base branch
+          # This is crucial for comparing with the base branch
+          fetch-depth: 2  
 
       - name: Setup yq
+        # This step is needed to install the yq tool
         uses: mikefarah/yq@v4.44.1
 
       - name: Run Checks
@@ -23,26 +25,17 @@ jobs:
           #!/bin/bash
           set -e
           
-          # 启用 globstar 以支持 sources/**/*.md
+          # Enable globstar for sources/**/*.md pattern matching
           shopt -s globstar
 
-          # Get valid files in git diff (markdown files in sources/)
-          get_diff_article_files() {
-            # Use git diff to find added or modified .md files in the sources directory
-            # --diff-filter=AM filters for Added or Modified files
-            # The last argument 'sources/**/*.md' is a path filter
-            ARTICLES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- sources/**/*.md)
-
-            if [ -z "$ARTICLES" ]; then
-              echo "No valid articles found in the PR. Skip checks."
-              exit 0
-            fi
-            echo "Found articles to check: $ARTICLES"
-          }
+          #
+          # Functions for article checks
+          #
 
           # Check if filename format is valid (lower case letters and hyphens only)
           check_filename_format() {
-            local FILENAME=$(basename "$1" .md)
+            local FILENAME
+            FILENAME=$(basename "$1" .md)
             if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
               ERROR="${ERROR}Invalid filename format. Filename should only contain lowercase letters, numbers, and hyphens; "
             fi
@@ -51,8 +44,10 @@ jobs:
           # Check if published_date is in the front matter
           check_published() {
             local PUBLISHED_ARTICLE=$1
-            local PUBLISHER=$(yq e '.publisher' "$PUBLISHED_ARTICLE")
-            local PUBLISHED_DATE=$(yq e '.published_date' "$PUBLISHED_ARTICLE")
+            local PUBLISHER
+            PUBLISHER=$(yq e '.publisher' "$PUBLISHED_ARTICLE")
+            local PUBLISHED_DATE
+            PUBLISHED_DATE=$(yq e '.published_date' "$PUBLISHED_ARTICLE")
             if [ "$PUBLISHER" == "null" ] || [ "$PUBLISHED_DATE" == "null" ]; then
               ERROR="${ERROR}Missing metadata in publisher/published_date; "
             fi
@@ -61,22 +56,24 @@ jobs:
           # Check if proofread_date is in the front matter
           check_proofread() {
             local PROOFREAD_ARTICLE=$1
-            local PROOFREAD_DATE=$(yq e '.proofread_date' "$PROOFREAD_ARTICLE")
+            local PROOFREAD_DATE
+            PROOFREAD_DATE=$(yq e '.proofread_date' "$PROOFREAD_ARTICLE")
             if [ "$PROOFREAD_DATE" == "null" ]; then
               ERROR="${ERROR}Missing metadata in proofread_date; "
             else
-              local PUBLISHED_DATE=$(yq e '.published_date' "$PROOFREAD_ARTICLE")
+              local PUBLISHED_DATE
+              PUBLISHED_DATE=$(yq e '.published_date' "$PROOFREAD_ARTICLE")
               if [ ! "$PUBLISHED_DATE" == "null" ] && [ "$PUBLISHED_DATE" -lt "$PROOFREAD_DATE" ]; then
                 ERROR="${ERROR}Published date is earlier than proofread date; "
               fi
             fi
           }
 
-          # Check if proofreader is in the front matter for proofreading/proofread stage,
-          # and check if proofreader is the same as the PR opener in proofreading/proofread stage
+          # Check if proofreader is in the front matter
           check_proofreading() {
             local PROOFREADING_ARTICLE=$1
-            local PROOFREADER=$(yq e '.proofreader' "$PROOFREADING_ARTICLE")
+            local PROOFREADER
+            PROOFREADER=$(yq e '.proofreader' "$PROOFREADING_ARTICLE")
             if [ "$PROOFREADER" == "null" ]; then
               ERROR="${ERROR}Missing metadata in proofreader; "
             else
@@ -91,28 +88,32 @@ jobs:
           # Check if translated_date is in the front matter
           check_translated() {
             local TRANSLATED_ARTICLE=$1
-            local TRANSLATED_DATE=$(yq e '.translated_date' "$TRANSLATED_ARTICLE")
+            local TRANSLATED_DATE
+            TRANSLATED_DATE=$(yq e '.translated_date' "$TRANSLATED_ARTICLE")
             if [ "$TRANSLATED_DATE" == "null" ]; then
               ERROR="${ERROR}Missing metadata in translated_date; "
             else
-              local PROOFREAD_DATE=$(yq e '.proofread_date' "$TRANSLATED_ARTICLE")
+              local PROOFREAD_DATE
+              PROOFREAD_DATE=$(yq e '.proofread_date' "$TRANSLATED_ARTICLE")
               if [ ! "$PROOFREAD_DATE" == "null" ] && [ "$PROOFREAD_DATE" -lt "$TRANSLATED_DATE" ]; then
                 ERROR="${ERROR}Proofread date is earlier than translated date; "
               fi
             fi
           }
 
-          # Check if translator is in the front matter for translating/translated stage,
-          # and check if translator is the same as the PR opener in translating/translated stage
+          # Check if translator is in the front matter
           check_translating() {
             local TRANSLATING_ARTICLE=$1
-            local TRANSLATOR=$(yq e '.translator' "$TRANSLATING_ARTICLE")
-            local TRANSLATING_DATE=$(yq e '.translating_date' "$TRANSLATING_ARTICLE")
+            local TRANSLATOR
+            TRANSLATOR=$(yq e '.translator' "$TRANSLATING_ARTICLE")
+            local TRANSLATING_DATE
+            TRANSLATING_DATE=$(yq e '.translating_date' "$TRANSLATING_ARTICLE")
             if [ "$TRANSLATOR" == "null" ]; then
               ERROR="${ERROR}Missing metadata in translator; "
             else
               if [ "$STATUS" == "translating" ] || [ "$STATUS" == "translated" ]; then
-                local COLLECTED_DATE=$(yq e '.collected_date' "$TRANSLATING_ARTICLE")
+                local COLLECTED_DATE
+                COLLECTED_DATE=$(yq e '.collected_date' "$TRANSLATING_ARTICLE")
                 if [ ! "$TRANSLATING_DATE" == "null" ] && [ "$TRANSLATING_DATE" -lt "$COLLECTED_DATE" ]; then
                   ERROR="${ERROR}Translating date is earlier than collected date;"
                 elif [ "$TRANSLATOR" != "$ACTOR_ID" ]; then
@@ -122,19 +123,24 @@ jobs:
             fi
           }
 
-          # Check if collected_date, collector, title, and author are in the front matter,
-          # and check if collector is the same as the PR opener in collected stage
+          # Check if collected_date, collector, title, and author are in the front matter
           check_collected() {
             local COLLECTED_ARTICLE=$1
-            local TITLE=$(yq e '.title' "$COLLECTED_ARTICLE")
-            local AUTHOR=$(yq e '.author' "$COLLECTED_ARTICLE")
-            local COLLECTOR=$(yq e '.collector' "$COLLECTED_ARTICLE")
-            local COLLECTED_DATE=$(yq e '.collected_date' "$COLLECTED_ARTICLE")
-            local LINK=$(yq e '.link' "$COLLECTED_ARTICLE")
+            local TITLE
+            TITLE=$(yq e '.title' "$COLLECTED_ARTICLE")
+            local AUTHOR
+            AUTHOR=$(yq e '.author' "$COLLECTED_ARTICLE")
+            local COLLECTOR
+            COLLECTOR=$(yq e '.collector' "$COLLECTED_ARTICLE")
+            local COLLECTED_DATE
+            COLLECTED_DATE=$(yq e '.collected_date' "$COLLECTED_ARTICLE")
+            local LINK
+            LINK=$(yq e '.link' "$COLLECTED_ARTICLE")
             if [ "$TITLE" == "null" ] || [ "$AUTHOR" == "null" ] || [ "$COLLECTOR" == "null" ] || [ "$COLLECTED_DATE" == "null" ] || [ "$LINK" == "null" ]; then
               ERROR="${ERROR}Missing metadata in title/author/collector/collected_date/link; "
             else
-              local TRANSLATED_DATE=$(yq e '.translated_date' "$COLLECTED_ARTICLE")
+              local TRANSLATED_DATE
+              TRANSLATED_DATE=$(yq e '.translated_date' "$COLLECTED_ARTICLE")
               if [ ! "$TRANSLATED_DATE" == "null" ] && [ "$TRANSLATED_DATE" -lt "$COLLECTED_DATE" ]; then
                 ERROR="${ERROR}Translated date is earlier than collected date; "
               fi
@@ -146,13 +152,30 @@ jobs:
             fi
           }
 
+          #
+          # Main script execution
+          #
+
           CHECK_PASSED=1
-          get_diff_article_files
-          for ARTICLE in $ARTICLES; do
+          
+          # Use git diff -z to get null-separated file names
+          # xargs -0 will handle the names with spaces correctly
+          mapfile -t -d '' ARTICLES < <(git diff --name-only --diff-filter=AM -z ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- sources/**/*.md)
+          
+          if [ ${#ARTICLES[@]} -eq 0 ]; then
+            echo "No valid articles found in the PR. Skip checks."
+            exit 0
+          fi
+          
+          echo "Found articles to check: ${ARTICLES[@]}"
+
+          for ARTICLE in "${ARTICLES[@]}"; do
             echo "Checking article: $ARTICLE"
             ERROR=""
             check_filename_format "$ARTICLE"
+            
             STATUS=$(yq e '.status' "$ARTICLE")
+            
             case "$STATUS" in
               "published")
                 check_published "$ARTICLE"
@@ -176,6 +199,7 @@ jobs:
                 ERROR="Invalid status: $STATUS"
                 ;;
             esac
+            
             if [ -z "$ERROR" ]; then
               echo "  ✨ All checks passed for $STATUS $ARTICLE"
             else
