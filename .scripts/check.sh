@@ -1,5 +1,8 @@
 #!/bin/bash
 
+
+set -e 
+
 # Get valid files in git diff (markdown files in sources/)
 get_diff_article_files() {
   FILES=$(cat $DIFF_JSON | yq e '.files[].path' - )
