@@ -21,6 +21,11 @@ jobs:
         with:
           json_diff_file_output: diff.json
           file_output_only: true
+      - name: Print diff.json content
+        run: |
+          echo "--- Content of diff.json ---"
+          cat diff.json
+          echo "-----------------------------"
       - name: Run Checks
         env: 
           DIFF_JSON: ${{ steps.git-diff-action.outputs.json-diff-path }}
