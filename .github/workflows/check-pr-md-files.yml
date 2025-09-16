@@ -24,7 +24,6 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "/repos/${{ github.repository }}/pulls?state=open&per_page=100" \
             --jq '.[].number')
-
           if [ -z "$PRS" ]; then
             echo "No open PRs found."
             echo "prs=" >> $GITHUB_OUTPUT
@@ -35,13 +34,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install yq via APT (from mikefarah/yq official repo)
+        run: |
+          # 确保 wget 已安装
+          sudo apt-get update
+          sudo apt-get install -y wget
+          # 下载并安装官方 GPG 密钥
+          sudo wget -O /usr/share/keyrings/yq-archive-keyring.gpg https://mikefarah.github.io/yq/apt.key
+          # 添加官方 APT 源
+          echo "deb [signed-by=/usr/share/keyrings/yq-archive-keyring.gpg] https://mikefarah.github.io/yq/debian stable main" | sudo tee /etc/apt/sources.list.d/yq.list
+          # 更新源并安装 yq
+          sudo apt-get update
+          sudo apt-get install -y yq
+
+      - name: Verify yq installation
+        run: |
+          yq --version
+          # 确保是 v4+（mikefarah/yq）
+          yq eval -V
+
       - name: Process each PR
         if: ${{ steps.list_prs.outputs.prs != '' }}
         run: |
           IFS=$'\n'
           for pr_number in ${{ steps.list_prs.outputs.prs }}; do
             echo "=== Checking PR #$pr_number ==="
-
             BASE_REF=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number" --jq '.base.ref')
             echo "Base branch: $BASE_REF"
 
@@ -50,17 +67,68 @@ jobs:
               echo "⚠️ 无法获取 PR 合并预览，可能冲突或尚未准备好。跳过此 PR。"
               continue
             }
-
             git checkout pr_merge_$pr_number
 
             # 检查是否修改了 sources/**/*.md
             CHANGED_MD_FILES=$(git diff --name-only "origin/$BASE_REF..HEAD" -- 'sources/**/*.md' 2>/dev/null)
-
-            if [ -n "$CHANGED_MD_FILES" ]; then
-              echo "✅ PR #$pr_number 修改了以下 Markdown 文件："
-              echo "$CHANGED_MD_FILES"
-            else
+            if [ -z "$CHANGED_MD_FILES" ]; then
               echo "❌ PR #$pr_number 未修改 sources/**/*.md 文件"
+              echo "------------------------------"
+              continue
+            fi
+
+            echo "✅ PR #$pr_number 修改了以下 Markdown 文件："
+            echo "$CHANGED_MD_FILES"
+
+            # 遍历每个修改的 Markdown 文件，检查元数据
+            HAS_ERROR=false
+            while IFS= read -r file; do
+              if [ ! -f "$file" ]; then
+                echo "⚠️ 文件不存在: $file"
+                continue
+              fi
+
+              # 提取 YAML Front Matter (假设是 --- 开头和结尾的)
+              FRONT_MATTER=$(sed -n '/^---$/,/^---$/{/^---$/!p}' "$file" 2>/dev/null)
+              if [ -z "$FRONT_MATTER" ]; then
+                echo "⚠️ $file 没有 YAML Front Matter"
+                HAS_ERROR=true
+                continue
+              fi
+
+              # 创建临时 YAML 文件供 yq 解析
+              TEMP_YAML=$(mktemp)
+              echo "$FRONT_MATTER" > "$TEMP_YAML"
+
+              # 检查 status 字段
+              STATUS=$(yq eval '.status' "$TEMP_YAML" 2>/dev/null)
+              if [ "$STATUS" != "translating" ]; then
+                echo "❌ $file: status 字段不是 'translating'，当前值: '$STATUS'"
+                HAS_ERROR=true
+              fi
+
+              # 检查 translating_date 字段格式 (YYYY-MM-DD)
+              TRANSLATING_DATE=$(yq eval '.translating_date' "$TEMP_YAML" 2>/dev/null)
+              if [ -z "$TRANSLATING_DATE" ]; then
+                echo "❌ $file: 缺少 translating_date 字段"
+                HAS_ERROR=true
+              else
+                # 使用 date 命令验证是否为合法 YYYY-MM-DD 格式
+                if ! date -d "$TRANSLATING_DATE" "+%Y-%m-%d" >/dev/null 2>&1; then
+                  echo "❌ $file: translating_date 格式错误，应为 YYYY-MM-DD，当前值: '$TRANSLATING_DATE'"
+                  HAS_ERROR=true
+                else
+                  echo "✅ $file: translating_date 格式正确: $TRANSLATING_DATE"
+                fi
+              fi
+
+              rm -f "$TEMP_YAML"
+            done <<< "$CHANGED_MD_FILES"
+
+            if [ "$HAS_ERROR" = true ]; then
+              echo "🚨 此 PR 存在元数据问题，请修正！"
+            else
+              echo "🎉 此 PR 所有 Markdown 文件元数据符合规范！"
             fi
 
             echo "------------------------------"
