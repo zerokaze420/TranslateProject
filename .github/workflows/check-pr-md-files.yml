@@ -34,24 +34,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install yq via APT (from mikefarah/yq official repo)
+      - name: Install yq (direct download)
         run: |
-          # 确保 wget 已安装
-          sudo apt-get update
-          sudo apt-get install -y wget
-          # 下载并安装官方 GPG 密钥
-          sudo wget -O /usr/share/keyrings/yq-archive-keyring.gpg https://mikefarah.github.io/yq/apt.key
-          # 添加官方 APT 源
-          echo "deb [signed-by=/usr/share/keyrings/yq-archive-keyring.gpg] https://mikefarah.github.io/yq/debian stable main" | sudo tee /etc/apt/sources.list.d/yq.list
-          # 更新源并安装 yq
-          sudo apt-get update
-          sudo apt-get install -y yq
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
 
       - name: Verify yq installation
         run: |
           yq --version
-          # 确保是 v4+（mikefarah/yq）
-          yq eval -V
 
       - name: Process each PR
         if: ${{ steps.list_prs.outputs.prs != '' }}
@@ -102,24 +92,34 @@ jobs:
 
               # 检查 status 字段
               STATUS=$(yq eval '.status' "$TEMP_YAML" 2>/dev/null)
-              if [ "$STATUS" != "translating" ]; then
-                echo "❌ $file: status 字段不是 'translating'，当前值: '$STATUS'"
-                HAS_ERROR=true
-              fi
 
-              # 检查 translating_date 字段格式 (YYYY-MM-DD)
-              TRANSLATING_DATE=$(yq eval '.translating_date' "$TEMP_YAML" 2>/dev/null)
-              if [ -z "$TRANSLATING_DATE" ]; then
-                echo "❌ $file: 缺少 translating_date 字段"
-                HAS_ERROR=true
-              else
-                # 使用 date 命令验证是否为合法 YYYY-MM-DD 格式
-                if ! date -d "$TRANSLATING_DATE" "+%Y-%m-%d" >/dev/null 2>&1; then
-                  echo "❌ $file: translating_date 格式错误，应为 YYYY-MM-DD，当前值: '$TRANSLATING_DATE'"
+              if [ "$STATUS" = "translating" ]; then
+                # 只有 status 是 translating 时，才检查 translating_date
+                TRANSLATING_DATE=$(yq eval '.translating_date' "$TEMP_YAML" 2>/dev/null)
+                if [ -z "$TRANSLATING_DATE" ]; then
+                  echo "❌ $file: 缺少 translating_date 字段（status 为 translating 时必须提供）"
                   HAS_ERROR=true
                 else
-                  echo "✅ $file: translating_date 格式正确: $TRANSLATING_DATE"
+                  # 验证格式
+                  if ! date -d "$TRANSLATING_DATE" "+%Y-%m-%d" >/dev/null 2>&1; then
+                    echo "❌ $file: translating_date 格式错误，应为 YYYY-MM-DD，当前值: '$TRANSLATING_DATE'"
+                    HAS_ERROR=true
+                  else
+                    # 计算天数差（今天 - translating_date）
+                    TRANSLATING_TS=$(date -d "$TRANSLATING_DATE" +%s)
+                    TODAY_TS=$(date +%s)
+                    DAY_DIFF=$(( (TODAY_TS - TRANSLATING_TS) / 86400 )) # 86400 = 24*60*60
+
+                    if [ $DAY_DIFF -gt 1 ]; then
+                      echo "🚨 $file: translating_date 距今已超过 1 天（当前：$DAY_DIFF 天前）"
+                      HAS_ERROR=true
+                    else
+                      echo "✅ $file: translating_date 在 1 天内，符合要求"
+                    fi
+                  fi
                 fi
+              else
+                echo "ℹ️ $file: status 不是 'translating'，跳过 translating_date 检查"
               fi
 
               rm -f "$TEMP_YAML"
