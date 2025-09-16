@@ -1,0 +1,78 @@
+name: Check PRs for Modified Markdown Files
+
+on:
+  # 每天 UTC 时间 10:00 触发（注意时区）
+  schedule:
+    - cron: '0 10 * * *'  # 每天 10:00 UTC
+  # 支持手动触发
+  workflow_dispatch:
+
+permissions:
+  # 需要读取 PR 和仓库内容
+  pull-requests: read
+  contents: read
+
+jobs:
+  check-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: List open pull requests
+        id: list_prs
+        run: |
+          # 获取所有打开的 PR
+          PRS=$(gh api --paginate \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/pulls?state=open&per_page=100" \
+            --jq '.[].number')
+
+          if [ -z "$PRS" ]; then
+            echo "No open PRs found."
+            echo "prs=" >> $GITHUB_OUTPUT
+          else
+            echo "Found PRs: $PRS"
+            echo "prs=$PRS" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Process each PR
+        if: ${{ steps.list_prs.outputs.prs != '' }}
+        run: |
+          IFS=$'\n'  # 按行分割
+          for pr_number in ${{ steps.list_prs.outputs.prs }}; do
+            echo "=== Checking PR #$pr_number ==="
+
+            # 获取 PR 的 base 和 head 分支
+            BASE_REF=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number" --jq '.base.ref')
+            HEAD_REF=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number" --jq '.head.ref')
+
+            echo "Base: $BASE_REF, Head: $HEAD_REF"
+
+            # 检出 base 分支用于比较
+            git fetch origin $BASE_REF
+            git checkout -b base_branch origin/$BASE_REF
+
+            # 检出 PR 分支（或直接 fetch PR ref）
+            git fetch origin pull/$pr_number/head:pr_branch
+            git checkout pr_branch
+
+            # 获取变更文件列表（只关心 sources/**/*.md）
+            CHANGED_MD_FILES=$(git diff --name-only origin/$BASE_REF...pr_branch -- 'sources/**/*.md')
+
+            if [ -n "$CHANGED_MD_FILES" ]; then
+              echo "✅ PR #$pr_number 修改了以下 Markdown 文件："
+              echo "$CHANGED_MD_FILES"
+              # 你可以在这里添加后续操作，比如调用脚本检查元数据
+              # 例如：./scripts/check-md-metadata.sh $CHANGED_MD_FILES
+            else
+              echo "❌ PR #$pr_number 未修改 sources/**/*.md 文件"
+            fi
+
+            echo "------------------------------"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
