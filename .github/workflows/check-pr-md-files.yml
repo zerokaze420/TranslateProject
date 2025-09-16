@@ -36,19 +36,27 @@ jobs:
 
       - name: Install yq (direct download)
         run: |
-          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
 
       - name: Verify yq installation
         run: |
           yq --version
 
-      - name: Process each PR
+      - name: Process each PR and send Feishu alert if needed
         if: ${{ steps.list_prs.outputs.prs != '' }}
         run: |
           IFS=$'\n'
+
           for pr_number in ${{ steps.list_prs.outputs.prs }}; do
             echo "=== Checking PR #$pr_number ==="
+
+            # 🌟 获取 PR 的完整 URL
+            PR_URL=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number" --jq '.html_url')
+            if [ -z "$PR_URL" ]; then
+              PR_URL="https://github.com/${{ github.repository }}/pull/$pr_number"
+            fi
+
             BASE_REF=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number" --jq '.base.ref')
             echo "Base branch: $BASE_REF"
 
@@ -70,63 +78,97 @@ jobs:
             echo "✅ PR #$pr_number 修改了以下 Markdown 文件："
             echo "$CHANGED_MD_FILES"
 
-            # 遍历每个修改的 Markdown 文件，检查元数据
+            # 用于收集当前 PR 中所有超期文件（JSON 数组格式）
+            JSON_LIST="["
+
             HAS_ERROR=false
+            FIRST_ITEM=true
+
             while IFS= read -r file; do
               if [ ! -f "$file" ]; then
                 echo "⚠️ 文件不存在: $file"
                 continue
               fi
 
-              # 提取 YAML Front Matter (假设是 --- 开头和结尾的)
+              # 提取 YAML Front Matter (--- 到 --- 之间的内容)
               FRONT_MATTER=$(sed -n '/^---$/,/^---$/{/^---$/!p}' "$file" 2>/dev/null)
               if [ -z "$FRONT_MATTER" ]; then
                 echo "⚠️ $file 没有 YAML Front Matter"
-                HAS_ERROR=true
                 continue
               fi
 
-              # 创建临时 YAML 文件供 yq 解析
+              # 创建临时文件给 yq 使用
               TEMP_YAML=$(mktemp)
               echo "$FRONT_MATTER" > "$TEMP_YAML"
 
-              # 检查 status 字段
+              # 🚫 不用 Python，改用 yq 提取字段
               STATUS=$(yq eval '.status' "$TEMP_YAML" 2>/dev/null)
+              TRANSLATING_DATE=$(yq eval '.translating_date' "$TEMP_YAML" 2>/dev/null)
+
+              rm -f "$TEMP_YAML"
 
               if [ "$STATUS" = "translating" ]; then
-                # 只有 status 是 translating 时，才检查 translating_date
-                TRANSLATING_DATE=$(yq eval '.translating_date' "$TEMP_YAML" 2>/dev/null)
                 if [ -z "$TRANSLATING_DATE" ]; then
-                  echo "❌ $file: 缺少 translating_date 字段（status 为 translating 时必须提供）"
+                  echo "❌ $file: 缺少 translating_date 字段"
                   HAS_ERROR=true
-                else
-                  # 验证格式
-                  if ! date -d "$TRANSLATING_DATE" "+%Y-%m-%d" >/dev/null 2>&1; then
-                    echo "❌ $file: translating_date 格式错误，应为 YYYY-MM-DD，当前值: '$TRANSLATING_DATE'"
-                    HAS_ERROR=true
+                  if [ "$FIRST_ITEM" = true ]; then
+                    FIRST_ITEM=false
                   else
-                    # 计算天数差（今天 - translating_date）
+                    JSON_LIST="$JSON_LIST,"
+                  fi
+                  JSON_LIST="$JSON_LIST{\"文件\": \"$file\", \"超期\": \"缺少日期字段\", \"PR链接\": \"$PR_URL\"}"
+
+                else
+                  # 验证日期格式
+                  if ! date -d "$TRANSLATING_DATE" "+%Y-%m-%d" >/dev/null 2>&1; then
+                    echo "❌ $file: translating_date 格式错误: '$TRANSLATING_DATE'"
+                    HAS_ERROR=true
+                    if [ "$FIRST_ITEM" = true ]; then
+                      FIRST_ITEM=false
+                    else
+                      JSON_LIST="$JSON_LIST,"
+                    fi
+                    JSON_LIST="$JSON_LIST{\"文件\": \"$file\", \"超期\": \"格式错误: $TRANSLATING_DATE\", \"PR链接\": \"$PR_URL\"}"
+
+                  else
+                    # 计算超期天数
                     TRANSLATING_TS=$(date -d "$TRANSLATING_DATE" +%s)
                     TODAY_TS=$(date +%s)
-                    DAY_DIFF=$(( (TODAY_TS - TRANSLATING_TS) / 86400 )) # 86400 = 24*60*60
+                    DAY_DIFF=$(( (TODAY_TS - TRANSLATING_TS) / 86400 ))
 
                     if [ $DAY_DIFF -gt 1 ]; then
-                      echo "🚨 $file: translating_date 距今已超过 1 天（当前：$DAY_DIFF 天前）"
+                      echo "🚨 $file: translating_date 超过 1 天（$DAY_DIFF 天前）"
                       HAS_ERROR=true
+                      if [ "$FIRST_ITEM" = true ]; then
+                        FIRST_ITEM=false
+                      else
+                        JSON_LIST="$JSON_LIST,"
+                      fi
+                      JSON_LIST="$JSON_LIST{\"文件\": \"$file\", \"超期\": \"$DAY_DIFF 天前 ($TRANSLATING_DATE)\", \"PR链接\": \"$PR_URL\"}"
                     else
-                      echo "✅ $file: translating_date 在 1 天内，符合要求"
+                      echo "✅ $file: translating_date 在 1 天内"
                     fi
                   fi
                 fi
               else
-                echo "ℹ️ $file: status 不是 'translating'，跳过 translating_date 检查"
+                echo "ℹ️ $file: status 不是 'translating'，跳过检查"
               fi
 
-              rm -f "$TEMP_YAML"
             done <<< "$CHANGED_MD_FILES"
 
+            JSON_LIST="$JSON_LIST]"
+
+            # 如果有错误，发送飞书通知
             if [ "$HAS_ERROR" = true ]; then
-              echo "🚨 此 PR 存在元数据问题，请修正！"
+              echo "🚨 此 PR 存在元数据问题，准备发送飞书通知..."
+
+              # 调用你的飞书脚本（它从 stdin 读取 JSON）
+              echo "$JSON_LIST" | .scripts/feishu.py \
+                -t "🚨 翻译超期提醒 [PR #$pr_number]" \
+                -H "**以下文件翻译状态已超期，请及时处理**" \
+                -c "red"
+
+              echo "✅ 飞书通知已发送。"
             else
               echo "🎉 此 PR 所有 Markdown 文件元数据符合规范！"
             fi
