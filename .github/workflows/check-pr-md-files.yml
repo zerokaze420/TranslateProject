@@ -155,6 +155,7 @@ jobs:
             if [ "$HAS_ERROR" = true ]; then
               echo "🚨 此 PR 存在元数据问题，准备发送飞书通知..."
               # 调用你的飞书脚本（它从 stdin 读取 JSON）
+              python3 -m pip install --user requests python-dotenv
               chmod +x .scripts/feishu.py
               echo "$JSON_LIST" | .scripts/feishu.py \
                 -t "🚨 翻译超期提醒 [PR #$pr_number]" \
