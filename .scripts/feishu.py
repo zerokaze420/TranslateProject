@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Callable, Set
 from dotenv import load_dotenv
 
 # 加载 .env
-load_dotenv()
+# load_dotenv()
 FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL")
 
 if not FEISHU_WEBHOOK_URL:
