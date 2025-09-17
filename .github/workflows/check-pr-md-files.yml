@@ -2,8 +2,8 @@ name: Check PRs for Modified Markdown Files
 
 on:
   schedule:
-    - cron: '0 10 * * *'
-  workflow_dispatch:
+    - cron: '0 10 * * *'  # 每天 10:00 UTC 执行
+  workflow_dispatch:       # 允许手动触发
 
 permissions:
   pull-requests: read
@@ -23,7 +23,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "/repos/${{ github.repository }}/pulls?state=open&per_page=100" \
-            --jq '.[].number')
+            --jq '[.[].number] | join(" ")')
           if [ -z "$PRS" ]; then
             echo "No open PRs found."
             echo "prs=" >> $GITHUB_OUTPUT
@@ -46,8 +46,7 @@ jobs:
       - name: Process each PR and send Feishu alert if needed
         if: ${{ steps.list_prs.outputs.prs != '' }}
         run: |
-          IFS=$'\n'
-
+          # 🔄 遍历空格分隔的 PR 编号（Bash 默认按空格/换行分词）
           for pr_number in ${{ steps.list_prs.outputs.prs }}; do
             echo "=== Checking PR #$pr_number ==="
 
@@ -80,7 +79,6 @@ jobs:
 
             # 用于收集当前 PR 中所有超期文件（JSON 数组格式）
             JSON_LIST="["
-
             HAS_ERROR=false
             FIRST_ITEM=true
 
@@ -104,7 +102,6 @@ jobs:
               # 🚫 不用 Python，改用 yq 提取字段
               STATUS=$(yq eval '.status' "$TEMP_YAML" 2>/dev/null)
               TRANSLATING_DATE=$(yq eval '.translating_date' "$TEMP_YAML" 2>/dev/null)
-
               rm -f "$TEMP_YAML"
 
               if [ "$STATUS" = "translating" ]; then
@@ -117,7 +114,6 @@ jobs:
                     JSON_LIST="$JSON_LIST,"
                   fi
                   JSON_LIST="$JSON_LIST{\"文件\": \"$file\", \"超期\": \"缺少日期字段\", \"PR链接\": \"$PR_URL\"}"
-
                 else
                   # 验证日期格式
                   if ! date -d "$TRANSLATING_DATE" "+%Y-%m-%d" >/dev/null 2>&1; then
@@ -129,13 +125,11 @@ jobs:
                       JSON_LIST="$JSON_LIST,"
                     fi
                     JSON_LIST="$JSON_LIST{\"文件\": \"$file\", \"超期\": \"格式错误: $TRANSLATING_DATE\", \"PR链接\": \"$PR_URL\"}"
-
                   else
                     # 计算超期天数
                     TRANSLATING_TS=$(date -d "$TRANSLATING_DATE" +%s)
                     TODAY_TS=$(date +%s)
                     DAY_DIFF=$(( (TODAY_TS - TRANSLATING_TS) / 86400 ))
-
                     if [ $DAY_DIFF -gt 1 ]; then
                       echo "🚨 $file: translating_date 超过 1 天（$DAY_DIFF 天前）"
                       HAS_ERROR=true
@@ -153,7 +147,6 @@ jobs:
               else
                 echo "ℹ️ $file: status 不是 'translating'，跳过检查"
               fi
-
             done <<< "$CHANGED_MD_FILES"
 
             JSON_LIST="$JSON_LIST]"
@@ -161,13 +154,11 @@ jobs:
             # 如果有错误，发送飞书通知
             if [ "$HAS_ERROR" = true ]; then
               echo "🚨 此 PR 存在元数据问题，准备发送飞书通知..."
-
               # 调用你的飞书脚本（它从 stdin 读取 JSON）
               echo "$JSON_LIST" | .scripts/feishu.py \
                 -t "🚨 翻译超期提醒 [PR #$pr_number]" \
                 -H "**以下文件翻译状态已超期，请及时处理**" \
                 -c "red"
-
               echo "✅ 飞书通知已发送。"
             else
               echo "🎉 此 PR 所有 Markdown 文件元数据符合规范！"
