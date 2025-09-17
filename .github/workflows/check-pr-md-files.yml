@@ -157,6 +157,7 @@ jobs:
               # 调用你的飞书脚本（它从 stdin 读取 JSON）
               python3 -m pip install --user requests python-dotenv
               chmod +x .scripts/feishu.py
+              touch .env
               echo "$JSON_LIST" | .scripts/feishu.py \
                 -t "🚨 翻译超期提醒 [PR #$pr_number]" \
                 -H "**以下文件翻译状态已超期，请及时处理**" \
