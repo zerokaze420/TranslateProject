@@ -7,13 +7,25 @@ import requests
 from typing import List, Dict, Any, Callable, Set
 from dotenv import load_dotenv
 
-# 加载 .env
-# load_dotenv()
+# ========================
+# 环境变量加载（安全兼容模式）
+# ========================
+# 仅当环境变量未设置时，才尝试加载 .env 文件（本地开发友好）
+if not os.getenv("FEISHU_WEBHOOK_URL"):
+    load_dotenv(verbose=True)  # verbose=True 会在控制台提示是否加载成功
+
 FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL")
 
 if not FEISHU_WEBHOOK_URL:
-    raise SystemExit("❌ 请在 .env 文件中设置 FEISHU_WEBHOOK_URL")
+    raise SystemExit(
+        "❌ 请设置环境变量 FEISHU_WEBHOOK_URL\n"
+        "   • 本地开发：创建 .env 文件并写入 FEISHU_WEBHOOK_URL=your_url\n"
+        "   • GitHub Actions：在 Settings > Secrets 中设置，并在 workflow 中通过 env 注入"
+    )
 
+# ========================
+# 配置常量
+# ========================
 # 支持的颜色模板
 COLORS = [
     'carmine', 'orange', 'wathet', 'turquoise', 'green',
@@ -24,6 +36,10 @@ COLORS = [
 # 默认识别为链接的字段名（可自定义）
 DEFAULT_LINK_FIELDS = {'url', 'link', 'href', 'website', 'page'}
 
+
+# ========================
+# 核心函数：构造飞书列表卡片
+# ========================
 def create_feishu_list_card(
     title: str = "系统通知",
     list_items: List[Dict[str, Any]] = None,
@@ -95,6 +111,9 @@ def create_feishu_list_card(
     return card
 
 
+# ========================
+# 发送卡片到飞书
+# ========================
 def send_feishu_card(card: Dict[str, Any]) -> bool:
     """
     发送飞书卡片
@@ -119,6 +138,9 @@ def send_feishu_card(card: Dict[str, Any]) -> bool:
         return False
 
 
+# ========================
+# 主函数
+# ========================
 def main():
     parser = argparse.ArgumentParser(
         description="发送 JSON 数据列表到飞书群聊（支持超链接）",
@@ -195,5 +217,8 @@ echo '[{"name":"GitHub","url":"https://github.com"}]' | ./feishu-send.py -t "链
         sys.exit(1)
 
 
+# ========================
+# 入口
+# ========================
 if __name__ == "__main__":
     main()
