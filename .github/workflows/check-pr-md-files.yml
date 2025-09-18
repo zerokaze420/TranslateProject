@@ -25,7 +25,7 @@ jobs:
       - name: 🔍 Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要完整历史用于 git show
+          fetch-depth: 0  # 需要完整历史用于 git show 和 merge refs
 
       # 💾 步骤 2：缓存 Python 依赖和 yq（加速后续运行）
       - name: 💾 Cache dependencies
@@ -34,7 +34,7 @@ jobs:
           path: |
             ~/.cache/pip
             /usr/local/bin/yq
-          key: ${{ runner.os }}-deps-v2
+          key: ${{ runner.os }}-deps-v3
 
       # 🐍 步骤 3：安装 Python 依赖（如果未缓存）
       - name: 🐍 Install Python dependencies
@@ -75,7 +75,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 🔍 步骤 7：遍历每个 PR，检查超期文件（优化版）
+      # 🔍 步骤 7：遍历每个 PR，检查超期文件（使用你原来的 git merge 逻辑）
       - name: 🔍 Process each PR and send Feishu alert if needed
         if: ${{ steps.list_prs.outputs.prs != '' }}
         run: |
@@ -90,24 +90,33 @@ jobs:
 
             # 🌐 获取 PR 详细信息
             PR_INFO=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number")
-            PR_URL=$(echo "$PR_INFO" | jq -r '.html_url')
-            PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
-            PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login')
-            BASE_REF=$(echo "$PR_INFO" | jq -r '.base.ref')
+            PR_URL=$(echo "$PR_INFO" | jq -r '.html_url // "https://github.com/${{ github.repository }}/pull/'$pr_number'")
+            PR_TITLE=$(echo "$PR_INFO" | jq -r '.title // "无标题"')
+            PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login // "未知"')
+            BASE_REF=$(echo "$PR_INFO" | jq -r '.base.ref // "main"')
 
             echo "📌 标题: $PR_TITLE"
             echo "👤 作者: @$PR_AUTHOR"
             echo "🎯 目标分支: $BASE_REF"
 
-            # 📄 获取 PR 中修改的 sources/**/*.md 文件列表
-            CHANGED_MD_FILES=$(git diff --name-only "origin/$BASE_REF..refs/pull/$pr_number/merge" -- 'sources/**/*.md' 2>/dev/null || true)
+            # 🧬 获取 PR 合并预览（使用你原来的可靠逻辑）
+            git fetch origin "pull/$pr_number/merge:pr_merge_$pr_number" 2>/dev/null || {
+              echo "⚠️ 无法获取 PR 合并预览，可能冲突或尚未准备好。跳过此 PR。"
+              echo "------------------------------"
+              continue
+            }
+            git checkout pr_merge_$pr_number
+
+            # 📄 检查是否修改了 sources/**/*.md（兼容写法，避免 globstar 问题）
+            CHANGED_MD_FILES=$(git diff --name-only "origin/$BASE_REF..HEAD" | grep '^sources/.*\.md$' || true)
+
             if [ -z "$CHANGED_MD_FILES" ]; then
               echo "✅ PR #$pr_number 未修改 sources/**/*.md 文件，跳过检查"
               echo "------------------------------"
               continue
             fi
 
-            echo "📝 修改了以下 Markdown 文件："
+            echo "📝 PR #$pr_number 修改了以下 Markdown 文件："
             echo "$CHANGED_MD_FILES"
 
             # 📖 初始化 JSON 数组
@@ -124,26 +133,19 @@ jobs:
               fi
 
               if [ ! -f "$SAFE_FILE" ]; then
-                # 使用 git show 查看文件在 PR 中的内容（无需 checkout）
-                FILE_CONTENT=$(git show "refs/pull/$pr_number/merge:$file" 2>/dev/null || true)
-                if [ -z "$FILE_CONTENT" ]; then
-                  echo "⚠️ 文件在 PR 中不存在或无法读取: $file"
-                  continue
-                fi
-              else
-                FILE_CONTENT=$(cat "$SAFE_FILE")
+                echo "⚠️ 文件不存在: $file"
+                continue
               fi
 
               # 🧾 提取 YAML Front Matter（--- 之间的部分）
-              FRONT_MATTER=$(echo "$FILE_CONTENT" | sed -n '/^---$/,/^---$/{/^---$/!p}')
-
+              FRONT_MATTER=$(sed -n '/^---$/,/^---$/{/^---$/!p}' "$SAFE_FILE" 2>/dev/null)
               if [ -z "$FRONT_MATTER" ]; then
                 echo "⚠️ $file 没有 YAML Front Matter"
                 continue
               fi
 
               # 🗃️ 创建临时 YAML 文件
-              TEMP_YAML="$TEMP_DIR/frontmatter_$$.yaml"
+              TEMP_YAML="$TEMP_DIR/frontmatter_$(date +%s)_$$.yaml"
               echo "$FRONT_MATTER" > "$TEMP_YAML"
 
               # 🎯 提取字段
