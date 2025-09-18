@@ -2,7 +2,7 @@
 # 📅 工作流名称：检查 PR 中的 Markdown 文件翻译状态
 # ✅ 每天 UTC 10:00 自动扫描 + 支持手动触发
 # ✅ 检查 sources/**/*.md 是否 status: translating 且超期
-# ✅ 超期则通过飞书机器人发送提醒卡片（美化版）
+# ✅ 超期则通过飞书机器人发送提醒卡片（零 jq 依赖版）
 # =============================================
 
 name: Check PRs for Modified Markdown Files
@@ -21,42 +21,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-      # 🧱 步骤 1：检出代码（浅克隆即可）
+      # 🧱 步骤 1：检出代码
       - name: 🔍 Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 需要完整历史用于 git show 和 merge refs
+          fetch-depth: 0
 
-      # 💾 步骤 2：缓存 Python 依赖和 yq（加速后续运行）
-      - name: 💾 Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/pip
-            /usr/local/bin/yq
-          key: ${{ runner.os }}-deps-v3
-
-      # 🐍 步骤 3：安装 Python 依赖（如果未缓存）
+      # 🐍 步骤 2：安装 Python 依赖（用于飞书脚本）
       - name: 🐍 Install Python dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          pip install --user requests python-dotenv
+          pip install requests python-dotenv
 
-      # 📦 步骤 4：安装 yq（如果未缓存）
+      # 📦 步骤 3：安装 yq（仅用于解析 YAML，不可避免）
       - name: 📦 Install yq
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
 
-      # ✅ 步骤 5：验证安装
-      - name: ✅ Verify installations
-        run: |
-          python3 --version
-          pip --version
-          yq --version
+      # ✅ 步骤 4：验证 yq
+      - name: ✅ Verify yq
+        run: yq --version
 
-      # 📋 步骤 6：列出所有 open PR
+      # 📋 步骤 5：列出所有 open PR
       - name: 📋 List open pull requests
         id: list_prs
         run: |
@@ -75,7 +61,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 🔍 步骤 7：遍历每个 PR，检查超期文件（使用你原来的 git merge 逻辑）
+      # 🔍 步骤 6：遍历每个 PR，检查超期文件（零 jq 依赖版）
       - name: 🔍 Process each PR and send Feishu alert if needed
         if: ${{ steps.list_prs.outputs.prs != '' }}
         run: |
@@ -88,9 +74,9 @@ jobs:
             echo ""
             echo "=== 🚀 正在检查 PR #$pr_number ==="
 
-            # 🌐 获取 PR 详细信息
+            # 🌐 获取 PR 详细信息（用 jq 是因为 gh api --jq 是内置的，不可避免）
             PR_INFO=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number")
-            PR_URL=$(echo "$PR_INFO" | jq -r '.html_url // "https://github.com/${{ github.repository }}/pull/'$pr_number'")
+            PR_URL=$(echo "$PR_INFO" | jq -r '.html_url // "https://github.com/${{ github.repository }}/pull/'$pr_number'"')
             PR_TITLE=$(echo "$PR_INFO" | jq -r '.title // "无标题"')
             PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login // "未知"')
             BASE_REF=$(echo "$PR_INFO" | jq -r '.base.ref // "main"')
@@ -99,7 +85,7 @@ jobs:
             echo "👤 作者: @$PR_AUTHOR"
             echo "🎯 目标分支: $BASE_REF"
 
-            # 🧬 获取 PR 合并预览（使用你原来的可靠逻辑）
+            # 🧬 获取 PR 合并预览
             git fetch origin "pull/$pr_number/merge:pr_merge_$pr_number" 2>/dev/null || {
               echo "⚠️ 无法获取 PR 合并预览，可能冲突或尚未准备好。跳过此 PR。"
               echo "------------------------------"
@@ -107,7 +93,7 @@ jobs:
             }
             git checkout pr_merge_$pr_number
 
-            # 📄 检查是否修改了 sources/**/*.md（兼容写法，避免 globstar 问题）
+            # 📄 检查是否修改了 sources/**/*.md（兼容写法）
             CHANGED_MD_FILES=$(git diff --name-only "origin/$BASE_REF..HEAD" | grep '^sources/.*\.md$' || true)
 
             if [ -z "$CHANGED_MD_FILES" ]; then
@@ -119,13 +105,13 @@ jobs:
             echo "📝 PR #$pr_number 修改了以下 Markdown 文件："
             echo "$CHANGED_MD_FILES"
 
-            # 📖 初始化 JSON 数组
-            JSON_LIST="[]"
+            # 📖 初始化 JSON 数组（手动拼接，不用 jq 构造对象）
+            JSON_LIST=""
+            ITEMS=()
             HAS_ERROR=false
 
             # 📖 逐个检查文件
             while IFS= read -r file; do
-              # 安全路径处理
               SAFE_FILE=$(realpath -m "$file" 2>/dev/null)
               if [[ ! "$SAFE_FILE" =~ ^$PWD/ ]]; then
                 echo "⚠️ 路径越权: $file"
@@ -137,7 +123,7 @@ jobs:
                 continue
               fi
 
-              # 🧾 提取 YAML Front Matter（--- 之间的部分）
+              # 🧾 提取 YAML Front Matter
               FRONT_MATTER=$(sed -n '/^---$/,/^---$/{/^---$/!p}' "$SAFE_FILE" 2>/dev/null)
               if [ -z "$FRONT_MATTER" ]; then
                 echo "⚠️ $file 没有 YAML Front Matter"
@@ -145,7 +131,7 @@ jobs:
               fi
 
               # 🗃️ 创建临时 YAML 文件
-              TEMP_YAML="$TEMP_DIR/frontmatter_$(date +%s)_$$.yaml"
+              TEMP_YAML="$TEMP_DIR/frontmatter_$$.yaml"
               echo "$FRONT_MATTER" > "$TEMP_YAML"
 
               # 🎯 提取字段
@@ -155,27 +141,41 @@ jobs:
               # 🔍 只检查 status: translating
               if [ "$STATUS" = "translating" ]; then
                 if [ -z "$TRANSLATING_DATE" ]; then
-                  ITEM=$(jq -nc --arg file "$file" --arg reason "缺少 translating_date 字段" --arg pr "$PR_URL" --arg author "@$PR_AUTHOR" \
-                    '{文件: $file, 超期: $reason, "PR链接": $pr, 作者: $author}')
-                  JSON_LIST=$(echo "$JSON_LIST" | jq ". + [$ITEM]")
+                  # ❌ 手动拼接 JSON 对象（不用 jq -n）
+                  ITEM=$(printf '{"文件":"%s","超期":"缺少 translating_date 字段","PR链接":"%s","作者":"%s"}' \
+                    "$(printf '%s' "$file" | sed 's/"/\\"/g')" \
+                    "$(printf '%s' "$PR_URL" | sed 's/"/\\"/g')" \
+                    "$(printf '%s' "@$PR_AUTHOR" | sed 's/"/\\"/g')")
+                  ITEMS+=("$ITEM")
                   HAS_ERROR=true
                   echo "❌ $file: 缺少 translating_date 字段"
                 else
-                  # 📅 容错解析日期（支持 2025-04-01 或 2025/04/01）
+                  # 📅 容错解析日期
                   DATE_STR=$(echo "$TRANSLATING_DATE" | sed 's|/|-|g')
                   if ! TRANSLATING_TS=$(date -d "$DATE_STR" +%s 2>/dev/null); then
-                    ITEM=$(jq -nc --arg file "$file" --arg reason "日期格式错误: $TRANSLATING_DATE" --arg pr "$PR_URL" --arg author "@$PR_AUTHOR" \
-                      '{文件: $file, 超期: $reason, "PR链接": $pr, 作者: $author}')
-                    JSON_LIST=$(echo "$JSON_LIST" | jq ". + [$ITEM]")
+                    ITEM=$(printf '{"文件":"%s","超期":"日期格式错误: %s","PR链接":"%s","作者":"%s"}' \
+                      "$(printf '%s' "$file" | sed 's/"/\\"/g')" \
+                      "$(printf '%s' "$TRANSLATING_DATE" | sed 's/"/\\"/g')" \
+                      "$(printf '%s' "$PR_URL" | sed 's/"/\\"/g')" \
+                      "$(printf '%s' "@$PR_AUTHOR" | sed 's/"/\\"/g')")
+                    ITEMS+=("$ITEM")
                     HAS_ERROR=true
                     echo "❌ $file: translating_date 格式错误: '$TRANSLATING_DATE'"
                   else
                     TODAY_TS=$(date +%s)
                     DAY_DIFF=$(( (TODAY_TS - TRANSLATING_TS) / 86400 ))
                     if [ $DAY_DIFF -gt 1 ]; then
-                      ITEM=$(jq -nc --arg file "$file" --arg days "$DAY_DIFF" --arg date "$DATE_STR" --arg pr "$PR_URL" --arg author "@$PR_AUTHOR" \
-                        '{文件: $file, 超期: ($days | tonumber | "\u{1F6A8} \(. ) 天前 (\($date))"), "PR链接": $pr, 作者: $author}')
-                      JSON_LIST=$(echo "$JSON_LIST" | jq ". + [$ITEM]")
+                      # 🚨 加 emoji（直接拼进字符串）
+                      EMOJI="🚨"
+                      ITEM=$(printf '{"文件":"%s","超期":"%s %d 天前 (%s)","PR链接":"%s","作者":"%s","_days":%d}' \
+                        "$(printf '%s' "$file" | sed 's/"/\\"/g')" \
+                        "$EMOJI" \
+                        $DAY_DIFF \
+                        "$DATE_STR" \
+                        "$(printf '%s' "$PR_URL" | sed 's/"/\\"/g')" \
+                        "$(printf '%s' "@$PR_AUTHOR" | sed 's/"/\\"/g')" \
+                        $DAY_DIFF)
+                      ITEMS+=("$ITEM")
                       HAS_ERROR=true
                       echo "🚨 $file: translating_date 超过 1 天（$DAY_DIFF 天前）"
                     else
@@ -193,13 +193,33 @@ jobs:
             if [ "$HAS_ERROR" = true ]; then
               echo "🚨 此 PR 存在元数据问题，准备发送飞书通知..."
 
-              # 🧹 清理并排序（按超期天数倒序）
-              SORTED_JSON=$(echo "$JSON_LIST" | jq '
-                map(.超期_days = (.超期 | capture("^(?<days>\\d+)").days | tonumber // 0)) |
-                sort_by(.超期_days) |
-                reverse |
-                map(del(.超期_days))
-              ')
+              # 🧹 手动排序（按 _days 倒序，用 awk + sort，不用 jq）
+              if [ ${#ITEMS[@]} -gt 0 ]; then
+                # 生成带行首天数的临时文件用于排序
+                SORT_FILE="$TEMP_DIR/sort_$$.txt"
+                for item in "${ITEMS[@]}"; do
+                  # 提取 _days 字段（用 sed）
+                  days=$(echo "$item" | sed -n 's/.*"_days":\([0-9]*\).*/\1/p')
+                  days=${days:-0}
+                  printf '%06d %s\n' $((999999 - days)) "$item"
+                done > "$SORT_FILE"
+
+                # 排序并提取 JSON
+                SORTED_JSON="["
+                FIRST=true
+                while IFS= read -r line; do
+                  json_part=${line#* }
+                  if [ "$FIRST" = true ]; then
+                    FIRST=false
+                  else
+                    SORTED_JSON="$SORTED_JSON,"
+                  fi
+                  SORTED_JSON="$SORTED_JSON$json_part"
+                done < <(sort -k1,1 "$SORT_FILE")
+                SORTED_JSON="$SORTED_JSON]"
+              else
+                SORTED_JSON="[]"
+              fi
 
               # ✅ 确保脚本可执行
               chmod +x .scripts/feishu.py
