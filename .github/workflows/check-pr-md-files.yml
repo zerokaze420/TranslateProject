@@ -230,7 +230,6 @@ jobs:
                 -H "**📄 PR 标题**: $PR_TITLE\n**👤 作者**: @$PR_AUTHOR\n\n**⚠️ 以下文件翻译状态已超期，请及时处理**" \
                 -c "red" \
                 --link-fields "PR链接" \
-                --compact
 
               echo "✅ 飞书通知已发送。"
             else
