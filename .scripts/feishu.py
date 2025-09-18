@@ -50,7 +50,7 @@ def create_feishu_list_card(
 
     if render_item is None:
         def default_render(item: Dict[str, Any], index: int, _list: List[Dict[str, Any]]) -> str:
-            lines = [f"**项 {index + 1}**"]
+            lines = []
             for k, v in item.items():
                 if k in link_fields and isinstance(v, str) and v.startswith(('http://', 'https://')):
                     display_text = v if len(v) < 30 else v[:27] + "..."
