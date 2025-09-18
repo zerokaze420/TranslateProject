@@ -2,7 +2,7 @@
 # 📅 工作流名称：检查 PR 中的 Markdown 文件翻译状态
 # ✅ 每天 UTC 10:00 自动扫描 + 支持手动触发
 # ✅ 检查 sources/**/*.md 是否 status: translating 且超期
-# ✅ 超期则通过飞书机器人发送提醒卡片（零 jq 依赖版）
+# ✅ 超期则通过飞书机器人发送提醒卡片（修复换行 + 无 jq 依赖）
 # =============================================
 
 name: Check PRs for Modified Markdown Files
@@ -32,7 +32,7 @@ jobs:
         run: |
           pip install requests python-dotenv
 
-      # 📦 步骤 3：安装 yq（仅用于解析 YAML，不可避免）
+      # 📦 步骤 3：安装 yq（仅用于解析 YAML）
       - name: 📦 Install yq
         run: |
           wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
@@ -61,7 +61,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 🔍 步骤 6：遍历每个 PR，检查超期文件（零 jq 依赖版）
+      # 🔍 步骤 6：遍历每个 PR，检查超期文件（修复换行 + 无 jq 依赖）
       - name: 🔍 Process each PR and send Feishu alert if needed
         if: ${{ steps.list_prs.outputs.prs != '' }}
         run: |
@@ -74,7 +74,7 @@ jobs:
             echo ""
             echo "=== 🚀 正在检查 PR #$pr_number ==="
 
-            # 🌐 获取 PR 详细信息（用 jq 是因为 gh api --jq 是内置的，不可避免）
+            # 🌐 获取 PR 详细信息
             PR_INFO=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number")
             PR_URL=$(echo "$PR_INFO" | jq -r '.html_url // "https://github.com/${{ github.repository }}/pull/'$pr_number'"')
             PR_TITLE=$(echo "$PR_INFO" | jq -r '.title // "无标题"')
@@ -85,7 +85,7 @@ jobs:
             echo "👤 作者: @$PR_AUTHOR"
             echo "🎯 目标分支: $BASE_REF"
 
-            # 🧬 获取 PR 合并预览
+            # 🧬 获取 PR 合并预览（使用你原来的可靠逻辑）
             git fetch origin "pull/$pr_number/merge:pr_merge_$pr_number" 2>/dev/null || {
               echo "⚠️ 无法获取 PR 合并预览，可能冲突或尚未准备好。跳过此 PR。"
               echo "------------------------------"
@@ -106,7 +106,6 @@ jobs:
             echo "$CHANGED_MD_FILES"
 
             # 📖 初始化 JSON 数组（手动拼接，不用 jq 构造对象）
-            JSON_LIST=""
             ITEMS=()
             HAS_ERROR=false
 
@@ -141,7 +140,7 @@ jobs:
               # 🔍 只检查 status: translating
               if [ "$STATUS" = "translating" ]; then
                 if [ -z "$TRANSLATING_DATE" ]; then
-                  # ❌ 手动拼接 JSON 对象（不用 jq -n）
+                  # ❌ 手动拼接 JSON 对象
                   ITEM=$(printf '{"文件":"%s","超期":"缺少 translating_date 字段","PR链接":"%s","作者":"%s"}' \
                     "$(printf '%s' "$file" | sed 's/"/\\"/g')" \
                     "$(printf '%s' "$PR_URL" | sed 's/"/\\"/g')" \
@@ -193,18 +192,15 @@ jobs:
             if [ "$HAS_ERROR" = true ]; then
               echo "🚨 此 PR 存在元数据问题，准备发送飞书通知..."
 
-              # 🧹 手动排序（按 _days 倒序，用 awk + sort，不用 jq）
+              # 🧹 手动排序（按 _days 倒序）
               if [ ${#ITEMS[@]} -gt 0 ]; then
-                # 生成带行首天数的临时文件用于排序
                 SORT_FILE="$TEMP_DIR/sort_$$.txt"
                 for item in "${ITEMS[@]}"; do
-                  # 提取 _days 字段（用 sed）
                   days=$(echo "$item" | sed -n 's/.*"_days":\([0-9]*\).*/\1/p')
                   days=${days:-0}
                   printf '%06d %s\n' $((999999 - days)) "$item"
                 done > "$SORT_FILE"
 
-                # 排序并提取 JSON
                 SORTED_JSON="["
                 FIRST=true
                 while IFS= read -r line; do
@@ -224,12 +220,12 @@ jobs:
               # ✅ 确保脚本可执行
               chmod +x .scripts/feishu.py
 
-              # 📤 发送飞书卡片
+              # 📤 发送飞书卡片（⚠️ 关键：去掉 --compact）
               echo "$SORTED_JSON" | .scripts/feishu.py \
                 -t "🚨 翻译超期提醒 [PR #$pr_number]" \
                 -H "**📄 PR 标题**: $PR_TITLE\n**👤 作者**: @$PR_AUTHOR\n\n**⚠️ 以下文件翻译状态已超期，请及时处理**" \
                 -c "red" \
-                --link-fields "PR链接" \
+                --link-fields "PR链接"
 
               echo "✅ 飞书通知已发送。"
             else
