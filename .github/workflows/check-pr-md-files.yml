@@ -205,13 +205,13 @@ jobs:
 
                 while IFS= read -r line; do
                   json_part=${line#* }
-                  # 解析每个 item 的字段
-                  FILE=$(echo "$json_part" | jq -r '.文件')
-                  OVERDUE=$(echo "$json_part" | jq -r '.超期')
-                  PR_LINK=$(echo "$json_part" | jq -r '."PR链接"')
-                  AUTHOR=$(echo "$json_part" | jq -r '.作者')
+                  # ✅ 使用 ["字段"] 语法读取中文字段
+                  FILE=$(echo "$json_part" | jq -r '.["文件"]')
+                  OVERDUE=$(echo "$json_part" | jq -r '.["超期"]')
+                  PR_LINK=$(echo "$json_part" | jq -r '.["PR链接"]')
+                  AUTHOR=$(echo "$json_part" | jq -r '.["作者"]')
 
-                  # 构造一个 div 元素（每项独立成块）
+                  # 构造一个 div 元素
                   ELEMENTS="$ELEMENTS,
                   {
                     \"tag\": \"div\",
