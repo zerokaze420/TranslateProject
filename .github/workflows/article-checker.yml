@@ -5,23 +5,30 @@ on:
     branches:
       - master
     paths:
-      - 'sources/**.md'
+      - 'sources/**/*.md' # 这行已经根据之前的讨论进行了修正
 
 jobs:
   check-article:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Get Diff
+
+      - name: Get changed files
         id: git-diff-action
         uses: GrantBirki/git-diff-action@v2.7.0
         with:
           json_diff_file_output: diff.json
           file_output_only: true
-      - name: Run Checks
+
+      - name: Set up YQ
+        run: |
+          sudo snap install yq
+
+      - name: Run checks
         env: 
           DIFF_JSON: ${{ steps.git-diff-action.outputs.json-diff-path }}
           ACTOR_ID: ${{ github.actor }}
