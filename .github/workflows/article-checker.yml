@@ -215,4 +215,4 @@ jobs:
           else
             echo "✅ All checks passed. You can merge the PR now."
             exit 0
-          fi
+
