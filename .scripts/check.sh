@@ -29,6 +29,7 @@ get_diff_article_files() {
                 ARTICLES="$ARTICLES $FILE"
             else
                 ERROR=$ERROR"⚠️ Warning: Body '$SLUG' of filename '$FILE' does not meet requirements /^[a-z]+(-[a-z]+)*$/, skipping the check." >&2
+                exit 1
             fi
             
         fi
