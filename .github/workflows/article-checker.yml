@@ -16,11 +16,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Fetch all history for accurate diffing
+          # 必须抓取全部历史记录，以便进行准确的 diff 比较
           fetch-depth: 0 
           
       - name: Install yq
-        # 安装 yq，它是处理 YAML front matter 的关键工具
+        # 安装 yq，用于处理 YAML front matter
         run: sudo snap install yq
           
       - name: Get Diff
@@ -29,7 +29,7 @@ jobs:
         uses: GrantBirki/git-diff-action@v2.7.0
         with:
           json_diff_file_output: diff.json
-          # 保持 true 让 diff.json 是纯文本列表
+          # 保持 true 让 diff.json 是空格分隔的纯文本列表
           file_output_only: true 
           
       - name: Run Article Checks
@@ -41,9 +41,9 @@ jobs:
         run: |
           #!/bin/bash
           
-          # 关键修复：
+          # 关键行：
           # set -e：遇到任何错误立即退出。
-          # set -f：禁用文件名扩展（Globbing），防止 $ARTICLE 为空时被解析为通配符。
+          # set -f：禁用文件名扩展（Globbing），防止空变量被解析为通配符。
           set -ef 
           
           # 定义一个辅助函数，用于从文件的 YAML front matter 中提取值
@@ -54,10 +54,9 @@ jobs:
             yq e ".$KEY" "$FILE" | sed 's/^"//;s/"$//'
           }
           
-          # 检查文件名格式是否有效（仅小写字母、数字和连字符）
+          # 检查文件名格式
           check_filename_format() {
             local ARTICLE_PATH="$1"
-            # 使用 basename 提取不带 .md 扩展名的文件名
             FILENAME=$(basename "$ARTICLE_PATH" .md)
             if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
               ERROR=$ERROR"Invalid filename format. Filename should only contain lowercase letters, numbers, and hyphens; "
@@ -83,7 +82,6 @@ jobs:
             if [ "$PROOFREAD_DATE" == "null" ]; then
               ERROR=$ERROR"Missing metadata in proofread_date; "
             else
-              # 检查 proofread_date 是否早于 published_date
               PUBLISHED_DATE=$(yq_extract 'published_date' "$PROOFREAD_ARTICLE")
               if [ ! "$PUBLISHED_DATE" == "null" ] && [ "$PUBLISHED_DATE" -lt "$PROOFREAD_DATE" ]; then
                 ERROR=$ERROR"Published date is earlier than proofread date; "
@@ -115,7 +113,6 @@ jobs:
             if [ "$TRANSLATED_DATE" == "null" ]; then
               ERROR=$ERROR"Missing metadata in translated_date; "
             else
-              # 检查 translated_date 是否早于 proofread_date
               PROOFREAD_DATE=$(yq_extract 'proofread_date' "$TRANSLATED_ARTICLE")
               if [ ! "$PROOFREAD_DATE" == "null" ] && [ "$PROOFREAD_DATE" -lt "$TRANSLATED_DATE" ]; then
                 ERROR=$ERROR"Proofread date is earlier than translated date; "
@@ -155,7 +152,6 @@ jobs:
             if [ "$TITLE" == "null" ] || [ "$AUTHOR" == "null" ] || [ "$COLLECTOR" == "null" ] || [ "$COLLECTED_DATE" == "null" ] || [ "$LINK" == "null" ]; then
               ERROR=$ERROR"Missing metadata in title/author/collector/collected_date/link; "
             else
-              # 检查 collected_date 是否早于 translated_date
               TRANSLATED_DATE=$(yq_extract 'translated_date' "$COLLECTED_ARTICLE")
               if [ ! "$TRANSLATED_DATE" == "null" ] && [ "$TRANSLATED_DATE" -lt "$COLLECTED_DATE" ]; then
                 ERROR=$ERROR"Translated date is earlier than collected date; "
@@ -172,9 +168,9 @@ jobs:
           
           echo "Processing diff file: $DIFF_JSON"
           
+          # --- 关键修复：添加 || true 避免 grep 失败时触发 set -e ---
           # 使用 read -a 将文件列表安全地读取到 Bash 数组中 (ARTICLES_ARRAY)
-          # tr ' ' '\n' 将空格分隔的列表转换为每行一个文件路径
-          IFS=$'\n' read -r -d '' -a ARTICLES_ARRAY < <(cat "$DIFF_JSON" | tr ' ' '\n' | grep '^sources/.*\.md$')
+          IFS=$'\n' read -r -d '' -a ARTICLES_ARRAY < <(cat "$DIFF_JSON" | tr ' ' '\n' | grep '^sources/.*\.md$' || true)
           
           # 检查数组是否为空
           if [ ${#ARTICLES_ARRAY[@]} -eq 0 ]; then
@@ -193,7 +189,7 @@ jobs:
             # 确保文件存在 (例如，如果文件被删除)
             if [ ! -f "$ARTICLE" ]; then
                 echo "Warning: File $ARTICLE not found in current commit. Skipping metadata checks."
-                # 仅进行文件名格式检查，跳过元数据检查
+                # 仅进行文件名格式检查
                 check_filename_format "$ARTICLE"
                 if [ -n "$ERROR" ]; then
                     echo "  😭 File $ARTICLE check failed (Deleted/Renamed): $ERROR"
