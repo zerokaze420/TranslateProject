@@ -5,204 +5,25 @@ on:
     branches:
       - master
     paths:
-      - 'sources/**/*.md'
+      - 'sources/**.md'
 
 jobs:
   check-article:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Get changed files
+      - name: Get Diff
         id: git-diff-action
         uses: GrantBirki/git-diff-action@v2.7.0
         with:
           json_diff_file_output: diff.json
           file_output_only: true
-      
-      - name: Setup environment and run checks
+      - name: Run Checks
         env: 
-          DIFF_JSON: ${{ steps.git-diff-action.outputs.json_diff_file_output }}
+          DIFF_JSON: ${{ steps.git-diff-action.outputs.json-diff-path }}
           ACTOR_ID: ${{ github.actor }}
         run: |
-          set -e
-
-          echo "GitHub Actions actor: $ACTOR_ID"
-          echo "DIFF_JSON path: $DIFF_JSON"
-          if [ -f "$DIFF_JSON" ]; then
-            echo "--- Content of $DIFF_JSON ---"
-            cat "$DIFF_JSON"
-          else
-            echo "--- ERROR: $DIFF_JSON not found ---"
-            exit 1
-          fi
-          echo "----------------------------"
-
-          # 安装 yq v4
-          sudo snap install yq
-
-          # -------------------------------
-          # 工具函数
-          # -------------------------------
-          get_diff_article_files() {
-            FILES=$(cat "$DIFF_JSON" | yq e '.files[].path' -)
-            ARTICLES=''
-            for FILE in $FILES; do
-              if [[ "$FILE" =~ ^sources/.*\.md$ ]]; then
-                ARTICLES="$ARTICLES $FILE"
-              fi
-            done
-            if [ -z "$ARTICLES" ]; then
-              echo "No valid articles found in the PR. Skip checks."
-              exit 0
-            fi
-          }
-
-          check_filename_format() {
-            FILENAME=$(basename "$1" .md)
-            if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-              ERROR=$ERROR"Invalid filename format; "
-            fi
-          }
-
-          check_published() {
-            PUBLISHER=$(yq e '.publisher' "$1")
-            PUBLISHED_DATE=$(yq e '.published_date' "$1")
-            if [ "$PUBLISHER" == "null" ] || [ "$PUBLISHED_DATE" == "null" ]; then
-              ERROR=$ERROR"Missing publisher/published_date; "
-            fi
-          }
-
-          check_proofread() {
-            PROOFREAD_DATE=$(yq e '.proofread_date' "$1")
-            if [ "$PROOFREAD_DATE" == "null" ]; then
-              ERROR=$ERROR"Missing proofread_date; "
-            else
-              PUBLISHED_DATE=$(yq e '.published_date' "$1")
-              if [ "$PUBLISHED_DATE" != "null" ] && [ "$PUBLISHED_DATE" -lt "$PROOFREAD_DATE" ]; then
-                ERROR=$ERROR"Published date is earlier than proofread date; "
-              fi
-            fi
-          }
-
-          check_proofreading() {
-            PROOFREADER=$(yq e '.proofreader' "$1")
-            if [ "$PROOFREADER" == "null" ]; then
-              ERROR=$ERROR"Missing proofreader; "
-            else
-              if [ "$STATUS" == "proofreading" ] || [ "$STATUS" == "proofread" ]; then
-                if [ "$PROOFREADER" != "$ACTOR_ID" ]; then
-                  ERROR=$ERROR"Proofreader is not the same as PR opener; "
-                fi
-              fi
-            fi
-          }
-
-          check_translated() {
-            TRANSLATED_DATE=$(yq e '.translated_date' "$1")
-            if [ "$TRANSLATED_DATE" == "null" ]; then
-              ERROR=$ERROR"Missing translated_date; "
-            else
-              PROOFREAD_DATE=$(yq e '.proofread_date' "$1")
-              if [ "$PROOFREAD_DATE" != "null" ] && [ "$PROOFREAD_DATE" -lt "$TRANSLATED_DATE" ]; then
-                ERROR=$ERROR"Proofread date is earlier than translated date; "
-              fi
-            fi
-          }
-
-          check_translating() {
-            TRANSLATOR=$(yq e '.translator' "$1")
-            TRANSLATING_DATE=$(yq e '.translating_date' "$1")
-            if [ "$TRANSLATOR" == "null" ]; then
-              ERROR=$ERROR"Missing translator; "
-            else
-              if [ "$STATUS" == "translating" ] || [ "$STATUS" == "translated" ]; then
-                COLLECTED_DATE=$(yq e '.collected_date' "$1")
-                if [ "$TRANSLATING_DATE" != "null" ] && [ "$TRANSLATING_DATE" -lt "$COLLECTED_DATE" ]; then
-                  ERROR=$ERROR"Translating date earlier than collected date; "
-                elif [ "$TRANSLATOR" != "$ACTOR_ID" ]; then
-                  ERROR=$ERROR"Translator is not the same as PR opener; "
-                fi
-              fi
-            fi
-          }
-
-          check_collected() {
-            TITLE=$(yq e '.title' "$1")
-            AUTHOR=$(yq e '.author' "$1")
-            COLLECTOR=$(yq e '.collector' "$1")
-            COLLECTED_DATE=$(yq e '.collected_date' "$1")
-            LINK=$(yq e '.link' "$1")
-            if [ "$TITLE" == "null" ] || [ "$AUTHOR" == "null" ] || [ "$COLLECTOR" == "null" ] || [ "$COLLECTED_DATE" == "null" ] || [ "$LINK" == "null" ]; then
-              ERROR=$ERROR"Missing title/author/collector/collected_date/link; "
-            else
-              TRANSLATED_DATE=$(yq e '.translated_date' "$1")
-              if [ "$TRANSLATED_DATE" != "null" ] && [ "$TRANSLATED_DATE" -lt "$COLLECTED_DATE" ]; then
-                ERROR=$ERROR"Translated date earlier than collected date; "
-              fi
-              if [ "$STATUS" == "collected" ]; then
-                if [ "$COLLECTOR" != "$ACTOR_ID" ]; then
-                  ERROR=$ERROR"Collector is not the same as PR opener; "
-                fi
-              fi
-            fi
-          }
-
-          # -------------------------------
-          # 主逻辑
-          # -------------------------------
-          CHECK_PASSED=1
-          get_diff_article_files
-          
-          echo "Found candidate article files: $ARTICLES"
-          echo "----------------------------"
-
-          for ARTICLE in $ARTICLES; do
-            echo "Checking article: $ARTICLE"
-            ERROR=""
-            check_filename_format "$ARTICLE"
-
-            STATUS=$(yq e '.status' "$ARTICLE")
-            case $STATUS in
-              "published")
-                check_published "$ARTICLE"
-                ;&
-              "proofread")
-                check_proofread "$ARTICLE"
-                ;&
-              "proofreading")
-                check_proofreading "$ARTICLE"
-                ;&
-              "translated")
-                check_translated "$ARTICLE"
-                ;&
-              "translating")
-                check_translating "$ARTICLE"
-                ;&
-              "collected")
-                check_collected "$ARTICLE"
-                ;;
-              *)
-                ERROR="Invalid status: $STATUS"
-                ;;
-            esac
-
-            if [ -z "$ERROR" ]; then
-              echo "  ✨ All checks passed for $STATUS $ARTICLE"
-            else
-              echo "  😭 Some checks failed for $STATUS $ARTICLE: $ERROR"
-              CHECK_PASSED=0
-            fi
-          done
-          
-          if [ $CHECK_PASSED -eq 0 ]; then
-            echo "❌ Some checks failed. Please fix the article(s) before merging the PR."
-            exit 1
-          else
-            echo "✅ All checks passed. You can merge the PR now."
-            exit 0
-
+          /bin/bash ./.scripts/check.sh
