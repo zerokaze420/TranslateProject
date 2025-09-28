@@ -39,7 +39,8 @@ jobs:
           ACTOR_ID: ${{ github.actor }}
           
         run: |
-          #!/bin/bash
+          echo $DIFF_JSON
+          cat $DIFF_JSON
           
           # 关键行：
           # set -e：遇到任何错误立即退出。
