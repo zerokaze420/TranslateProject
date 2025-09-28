@@ -19,20 +19,18 @@ jobs:
           # Fetch all history for accurate diffing
           fetch-depth: 0 
           
-      - name: Install yq and jq
-        # 安装 yq (用于处理 front matter) 和 jq (用于解析 diff.json)
-        run: |
-          sudo snap install yq
-          # jq 通常在 ubuntu-latest 上已预装，但为了确保，可以加上安装命令
-          sudo apt-get update && sudo apt-get install -y jq
+      - name: Install yq
+        # 安装 yq，它是处理 YAML front matter 的关键工具
+        run: sudo snap install yq
           
       - name: Get Diff
         id: git-diff-action
-        # 获取 PR 中更改的文件列表，并输出到 diff.json
+        # 获取 PR 中更改的文件列表，输出到 diff.json (纯文本格式)
         uses: GrantBirki/git-diff-action@v2.7.0
         with:
           json_diff_file_output: diff.json
-          file_output_only: true
+          # 保持 true 让 diff.json 成为纯文本列表，并修改 Bash 脚本配合
+          file_output_only: true 
           
       - name: Run Article Checks
         # 将环境变量（Diff 文件路径和 PR 开启者 ID）传递给脚本
@@ -60,10 +58,6 @@ jobs:
             local ARTICLE_PATH="$1"
             # 使用 basename 提取不带 .md 扩展名的文件名
             FILENAME=$(basename "$ARTICLE_PATH" .md)
-            echo "Extracted filename: $FILENAME"
-            # 正则表达式检查：必须以小写字母或数字开头，且仅包含小写字母、数字和连字符，
-            # 并且不能以连字符开头或结尾，以确保连字符仅用作分隔符。
-            # 原始正则 ^[a-z0-9]+(-[a-z0-9]+)*$ 是符合要求的，保留原版。
             if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
               ERROR=$ERROR"Invalid filename format. Filename should only contain lowercase letters, numbers, and hyphens; "
             fi
@@ -175,12 +169,13 @@ jobs:
           
           CHECK_PASSED=1 # To check if all the articles pass
           
-          # --- 修复 $FILES 未赋值的关键代码 ---
-          # 1. 使用 jq 从 diff.json 中提取所有更改的文件名 (added, modified, renamed)。
-          # 2. 使用 grep 过滤出 sources/ 目录下的 .md 文件。
-          # 3. 将结果赋值给 $FILES 变量。
+          # --- 关键修改：直接处理纯文本 diff 文件，赋值给 $FILES ---
+          # 1. cat $DIFF_JSON: 读取 diff.json 中的空格分隔的路径字符串
+          # 2. tr ' ' '\n': 将空格替换为换行符，使每个路径占一行
+          # 3. grep: 过滤出 sources/ 目录下的 .md 文件
+          # 4. 将结果赋值给 $FILES 变量，作为供 for 循环遍历的列表
           echo "Processing diff file: $DIFF_JSON"
-          FILES=$(jq -r '[.[] | select(.status == "added" or .status == "modified" or .status == "renamed") | .filename] | .[]' $DIFF_JSON | grep '^sources/.*\.md$')
+          FILES=$(cat $DIFF_JSON | tr ' ' '\n' | grep '^sources/.*\.md$')
 
           if [ -z "$FILES" ]; then
              echo "No sources/*.md files were found in the changes. Exiting successfully."
