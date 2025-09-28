@@ -1,0 +1,238 @@
+# =============================================
+# 📅 工作流名称：检查 PR 中的 Markdown 文件翻译状态
+# ✅ 每天 UTC 10:00 自动扫描 + 支持手动触发
+# ✅ 检查 sources/**/*.md 是否 status: translating 且超期（30天）
+# ✅ 超期则通过 GitHub Issue Comment 触发邮件通知
+# =============================================
+
+name: Check PRs for Modified Markdown Files
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # 每天 UTC 10:00 自动运行
+  workflow_dispatch:      # 允许手动触发
+
+permissions:
+  pull-requests: write  # ⚠️ 必须为 write 才能评论 PR
+  contents: read        # 读取仓库内容（检出代码）
+
+jobs:
+  check-prs:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ───────────────────────────────────────────────
+      # 🧱 步骤 1：检出仓库代码（完整历史）
+      # ───────────────────────────────────────────────
+      - name: 🔍 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ───────────────────────────────────────────────
+      # 📦 步骤 2：安装 yq（用于解析 YAML Front Matter）
+      # ───────────────────────────────────────────────
+      - name: 📦 Install yq
+        run: |
+          wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      # ───────────────────────────────────────────────
+      # ✅ 步骤 3：验证 yq 安装成功
+      # ───────────────────────────────────────────────
+      - name: ✅ Verify yq
+        run: yq --version
+
+      # ───────────────────────────────────────────────
+      # 📋 步骤 4：列出所有 open 的 Pull Requests
+      # ───────────────────────────────────────────────
+      - name: 📋 List open pull requests
+        id: list_prs
+        run: |
+          PRS=$(gh api --paginate \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/pulls?state=open&per_page=100" \
+            --jq '[.[].number] | join(" ")')
+          
+          if [ -z "$PRS" ]; then
+            echo "📭 未找到任何 open PR"
+            echo "prs=" >> $GITHUB_OUTPUT
+          else
+            echo "📬 找到以下 PR: $PRS"
+            echo "prs=$PRS" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ───────────────────────────────────────────────
+      # 📢 步骤 5：获取仓库所有者（用于 @ 提及）
+      # ───────────────────────────────────────────────
+      - name: 📢 Get Repository Owner
+        id: repo_owner
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const repo = context.repo;
+            core.setOutput('owner_login', repo.owner);
+            console.log(`Repository Owner is: ${repo.owner}`);
+
+      # ───────────────────────────────────────────────
+      # 🔍 步骤 6：遍历每个 PR，检查超期文件并收集通知数据
+      # ───────────────────────────────────────────────
+      - name: 🔍 Check overdue files and collect data
+        id: check_and_collect
+        if: ${{ steps.list_prs.outputs.prs != '' }}
+        run: |
+          TIMEOUT_DAYS=30
+          ALL_ALERTS="[]"
+
+          for pr_number in ${{ steps.list_prs.outputs.prs }}; do
+            echo ""
+            echo "=== 🚀 正在检查 PR #$pr_number ==="
+
+            # 获取 PR 基本信息
+            PR_INFO=$(gh api "/repos/${{ github.repository }}/pulls/$pr_number")
+            PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login')
+            PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
+            PR_URL=$(echo "$PR_INFO" | jq -r '.html_url')
+            BASE_REF=$(echo "$PR_INFO" | jq -r '.base.ref')
+
+            # 尝试检出 PR 合并预览分支
+            git fetch origin "pull/$pr_number/merge:pr_merge_$pr_number" 2>/dev/null || {
+              echo "⚠️ 无法获取 PR 合并预览，跳过。"
+              continue
+            }
+            git checkout -f pr_merge_$pr_number
+
+            # 获取 PR 中修改的 sources/**/*.md 文件
+            CHANGED_MD_FILES=$(git diff --name-only "origin/$BASE_REF..HEAD" | grep '^sources/.*\.md$' || true)
+            if [ -z "$CHANGED_MD_FILES" ]; then
+              echo "✅ PR #$pr_number 未修改 sources/**/*.md 文件，跳过检查"
+              continue
+            fi
+
+            # 检查每个 Markdown 文件的 Front Matter
+            OVERDUE_FILES="[]"
+            HAS_OVERDUE=false
+
+            while IFS= read -r file; do
+              # 提取 YAML Front Matter（--- ... --- 之间的内容）
+              FRONT_MATTER=$(sed -n '/^---$/,/^---$/{/^---$/!p}' "$file" 2>/dev/null)
+              [ -z "$FRONT_MATTER" ] && continue
+
+              TEMP_YAML="/tmp/frontmatter_$$.yaml"
+              echo "$FRONT_MATTER" > "$TEMP_YAML"
+
+              STATUS=$(yq eval '.status // ""' "$TEMP_YAML" 2>/dev/null)
+              TRANSLATING_DATE=$(yq eval '.translating_date // ""' "$TEMP_YAML" 2>/dev/null)
+
+              if [ "$STATUS" = "translating" ]; then
+                OVERDUE_INFO="无"
+                DAY_DIFF=0
+
+                if [ -z "$TRANSLATING_DATE" ]; then
+                  OVERDUE_INFO="缺少 translating_date 字段"
+                  HAS_OVERDUE=true
+                else
+                  DATE_STR=$(echo "$TRANSLATING_DATE" | sed 's|/|-|g')
+                  if ! TRANSLATING_TS=$(date -d "$DATE_STR" +%s 2>/dev/null); then
+                    OVERDUE_INFO="日期格式错误: $TRANSLATING_DATE"
+                    HAS_OVERDUE=true
+                  else
+                    TODAY_TS=$(date +%s)
+                    DAY_DIFF=$(( (TODAY_TS - TRANSLATING_TS) / 86400 ))
+                    if [ $DAY_DIFF -gt $TIMEOUT_DAYS ]; then
+                      OVERDUE_INFO="🚨 已超期 ${DAY_DIFF} 天"
+                      HAS_OVERDUE=true
+                    fi
+                  fi
+                fi
+
+                if [ "$HAS_OVERDUE" = true ]; then
+                  FILE_JSON=$(jq -n \
+                    --arg file "$file" \
+                    --arg info "$OVERDUE_INFO" \
+                    --argjson days $DAY_DIFF \
+                    '{file: $file, info: $info, days: $days}')
+                  OVERDUE_FILES=$(echo "$OVERDUE_FILES" | jq ". + [$FILE_JSON]")
+                fi
+              fi
+            done <<< "$CHANGED_MD_FILES"
+
+            # 若存在超期文件，记录该 PR 的告警信息
+            if echo "$OVERDUE_FILES" | jq -e '. | length > 0' >/dev/null; then
+              PR_ALERT=$(jq -n \
+                --arg pr_number "$pr_number" \
+                --arg author "$PR_AUTHOR" \
+                --arg title "$PR_TITLE" \
+                --arg url "$PR_URL" \
+                --argjson files "$OVERDUE_FILES" \
+                '{pr_number: ($pr_number|tonumber), author: $author, title: $title, url: $url, files: $files}')
+              
+              ALL_ALERTS=$(echo "$ALL_ALERTS" | jq ". + [$PR_ALERT]")
+              echo "🚨 PR #$pr_number 发现超期文件，已收集数据。"
+            else
+              echo "🎉 PR #$pr_number 文件元数据符合规范！"
+            fi
+
+            # 切回原分支，清理临时状态
+            git checkout -f "origin/$BASE_REF" 2>/dev/null || true
+            echo "------------------------------"
+          done
+
+          echo "all_alerts=$ALL_ALERTS" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ───────────────────────────────────────────────
+      # 📢 步骤 7：发送 GitHub 评论（触发邮件通知）
+      # ───────────────────────────────────────────────
+      - name: 📢 Send Email Alert via GitHub Comment
+        uses: actions/github-script@v7
+        if: ${{ steps.check_and_collect.outputs.all_alerts != '[]' }}
+        with:
+          script: |
+            const alerts = JSON.parse(core.getInput('alerts'));
+            const repoOwner = core.getInput('repo_owner');
+
+            for (const alert of alerts) {
+              const prNumber = alert.pr_number;
+              const author = alert.author;
+              const files = alert.files.sort((a, b) => b.days - a.days); // 按超期天数倒序
+
+              // 构造文件列表 Markdown 表格
+              let fileListMarkdown = "| 文件路径 | 超期状态 |\n";
+              fileListMarkdown += "| :--- | :--- |\n";
+              files.forEach(file => {
+                fileListMarkdown += `| \`${file.file}\` | ${file.info} |\n`;
+              });
+
+              // 构造完整评论内容
+              const commentBody = `## 🚨 翻译超期提醒 [PR #${prNumber}]
+              
+              **请注意：** PR 中的某些 Markdown 文件翻译状态已超期，请及时处理。
+              
+            - **PR 标题**: ${alert.title}
+            - **PR 链接**: [🔗 点击查看](${alert.url})
+            - **通知对象**: @${author}（PR 作者）和 @${repoOwner}（仓库所有者）
+
+            ### ⚠️ 超期文件列表
+            ${fileListMarkdown}
+
+            ---
+            此通知由 [${context.workflow}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) 工作流每日自动发送。_`;
+
+              // 发送评论（自动触发 GitHub 邮件）
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: commentBody
+              });
+
+              console.log(`✅ 已向 PR #${prNumber} 发送超期通知，@了 ${author} 和 ${repoOwner}`);
+            }
+        env:
+          alerts: ${{ steps.check_and_collect.outputs.all_alerts }}
+          repo_owner: ${{ steps.repo_owner.outputs.owner_login }}
