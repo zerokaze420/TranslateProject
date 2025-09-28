@@ -53,16 +53,7 @@ jobs:
             yq e ".$KEY" "$FILE" | sed 's/^"//;s/"$//'
           }
           
-          # 获取 git diff 中所有有效的文章文件 (sources/ 下的 markdown 文件)
-          get_diff_article_files() {
-            # FIX: 简化 yq 表达式，使用 grep 过滤 .md 文件，避免 yq lexer 错误
-            FILES=$(yq e '.files[].path' "$DIFF_JSON" | grep '\.md$' || true)
-            
-            if [ -z "$FILES" ]; then
-              echo "No valid articles found in the PR. Skip checks."
-              exit 0
-            fi
-          }
+
           
           # 检查文件名格式是否有效（仅小写字母、数字和连字符）
           check_filename_format() {
