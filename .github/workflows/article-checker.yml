@@ -19,9 +19,12 @@ jobs:
           # Fetch all history for accurate diffing
           fetch-depth: 0 
           
-      - name: Install yq
-        # 安装 yq，它是处理 YAML front matter 的关键工具
-        run: sudo snap install yq
+      - name: Install yq and jq
+        # 安装 yq (用于处理 front matter) 和 jq (用于解析 diff.json)
+        run: |
+          sudo snap install yq
+          # jq 通常在 ubuntu-latest 上已预装，但为了确保，可以加上安装命令
+          sudo apt-get update && sudo apt-get install -y jq
           
       - name: Get Diff
         id: git-diff-action
@@ -44,7 +47,6 @@ jobs:
           set -e 
           
           # 定义一个辅助函数，用于从文件的 YAML front matter 中提取值
-          # 替代原脚本中的 'yq -f extract'
           yq_extract() {
             local KEY="$1"
             local FILE="$2"
@@ -53,12 +55,15 @@ jobs:
             yq e ".$KEY" "$FILE" | sed 's/^"//;s/"$//'
           }
           
-
-          
           # 检查文件名格式是否有效（仅小写字母、数字和连字符）
           check_filename_format() {
             local ARTICLE_PATH="$1"
+            # 使用 basename 提取不带 .md 扩展名的文件名
             FILENAME=$(basename "$ARTICLE_PATH" .md)
+            echo "Extracted filename: $FILENAME"
+            # 正则表达式检查：必须以小写字母或数字开头，且仅包含小写字母、数字和连字符，
+            # 并且不能以连字符开头或结尾，以确保连字符仅用作分隔符。
+            # 原始正则 ^[a-z0-9]+(-[a-z0-9]+)*$ 是符合要求的，保留原版。
             if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
               ERROR=$ERROR"Invalid filename format. Filename should only contain lowercase letters, numbers, and hyphens; "
             fi
@@ -169,32 +174,47 @@ jobs:
           }
           
           CHECK_PASSED=1 # To check if all the articles pass
-          echo $DIFF_JSON
           
+          # --- 修复 $FILES 未赋值的关键代码 ---
+          # 1. 使用 jq 从 diff.json 中提取所有更改的文件名 (added, modified, renamed)。
+          # 2. 使用 grep 过滤出 sources/ 目录下的 .md 文件。
+          # 3. 将结果赋值给 $FILES 变量。
+          echo "Processing diff file: $DIFF_JSON"
+          FILES=$(jq -r '[.[] | select(.status == "added" or .status == "modified" or .status == "renamed") | .filename] | .[]' $DIFF_JSON | grep '^sources/.*\.md$')
+
+          if [ -z "$FILES" ]; then
+             echo "No sources/*.md files were found in the changes. Exiting successfully."
+             exit 0
+          fi
+          
+          echo "Files to check: $FILES"
+          
+          # 现在 $FILES 变量包含了要检查的文件列表
           for ARTICLE in $FILES; do
-            echo "Checking article: $ARTICLE"
+            echo "--- Checking article: $ARTICLE ---"
             ERROR=""
+            
             # Add the new filename format check
             check_filename_format $ARTICLE
-          
+            
             STATUS=$(yq_extract 'status' $ARTICLE)
             
             case $STATUS in
               "published")
                 check_published $ARTICLE
-                ;& # Fallthrough to ensure low stage checks will run on articles in higher stages
+                ;;& # Fallthrough to ensure low stage checks will run on articles in higher stages
               "proofread")
                 check_proofread $ARTICLE
-                ;&
+                ;;&
               "proofreading")
                 check_proofreading $ARTICLE
-                ;&
+                ;;&
               "translated")
                 check_translated $ARTICLE
-                ;&
+                ;;&
               "translating")
                 check_translating $ARTICLE
-                ;&
+                ;;&
               "collected")
                 check_collected $ARTICLE
                 ;;
