@@ -5,192 +5,232 @@ on:
     branches:
       - master
     paths:
-      - 'sources/**/*.md'
+      # 确保只有 sources/ 目录下的 .md 文件发生变化时才触发
+      - 'sources/**.md'
 
 jobs:
   check-article:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Get changed files
+          # 必须抓取全部历史记录，以便进行准确的 diff 比较
+          fetch-depth: 0 
+          
+      - name: Install yq
+        # 安装 yq，用于处理 YAML front matter
+        run: sudo snap install yq
+          
+      - name: Get Diff
         id: git-diff-action
+        # 获取 PR 中更改的文件列表，输出到 diff.json (纯文本格式)
         uses: GrantBirki/git-diff-action@v2.7.0
         with:
           json_diff_file_output: diff.json
-          file_output_only: true
-      
-      - name: Setup environment and run checks
-        env: 
-          DIFF_JSON: ${{ steps.git-diff-action.outputs.json_diff_file_output }}
+          # 保持 true 让 diff.json 是空格分隔的纯文本列表
+          file_output_only: true 
+          
+      - name: Run Article Checks
+        # 将环境变量（Diff 文件路径和 PR 开启者 ID）传递给脚本
+        env:
+          DIFF_JSON: ${{ steps.git-diff-action.outputs.json-diff-path }}
           ACTOR_ID: ${{ github.actor }}
+          
         run: |
-          set -e
-
-          echo "GitHub Actions actor: $ACTOR_ID"
-          echo "DIFF_JSON path: $DIFF_JSON"
-          if [ -f "$DIFF_JSON" ]; then
-            echo "--- Content of $DIFF_JSON ---"
-            cat "$DIFF_JSON"
-          else
-            echo "--- ERROR: $DIFF_JSON not found ---"
-            exit 1
-          fi
-          echo "----------------------------"
-
-          # 安装 yq v4
-          sudo snap install yq
-
-          # -------------------------------
-          # 工具函数
-          # -------------------------------
-          get_diff_article_files() {
-            FILES=$(cat "$DIFF_JSON" | yq e '.files[].path' -)
-            ARTICLES=''
-            for FILE in $FILES; do
-              if [[ "$FILE" =~ ^sources/.*\.md$ ]]; then
-                ARTICLES="$ARTICLES $FILE"
-              fi
-            done
-            if [ -z "$ARTICLES" ]; then
-              echo "No valid articles found in the PR. Skip checks."
-              exit 0
-            fi
+          echo $DIFF_JSON
+          cat $DIFF_JSON
+          
+          # 关键行：
+          # set -e：遇到任何错误立即退出。
+          # set -f：禁用文件名扩展（Globbing），防止空变量被解析为通配符。
+          set -ef 
+          
+          # 定义一个辅助函数，用于从文件的 YAML front matter 中提取值
+          yq_extract() {
+            local KEY="$1"
+            local FILE="$2"
+            # 确保对文件路径使用双引号
+            yq e ".$KEY" "$FILE" | sed 's/^"//;s/"$//'
           }
-
+          
+          # 检查文件名格式
           check_filename_format() {
-            FILENAME=$(basename "$1" .md)
+            local ARTICLE_PATH="$1"
+            FILENAME=$(basename "$ARTICLE_PATH" .md)
             if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-              ERROR=$ERROR"Invalid filename format; "
+              ERROR=$ERROR"Invalid filename format. Filename should only contain lowercase letters, numbers, and hyphens; "
             fi
           }
-
+          
+          # 检查 published_date 和 publisher
           check_published() {
-            PUBLISHER=$(yq e '.publisher' "$1")
-            PUBLISHED_DATE=$(yq e '.published_date' "$1")
+            local PUBLISHED_ARTICLE="$1"
+            PUBLISHER=$(yq_extract 'publisher' "$PUBLISHED_ARTICLE")
+            PUBLISHED_DATE=$(yq_extract 'published_date' "$PUBLISHED_ARTICLE")
+            
             if [ "$PUBLISHER" == "null" ] || [ "$PUBLISHED_DATE" == "null" ]; then
-              ERROR=$ERROR"Missing publisher/published_date; "
+              ERROR=$ERROR"Missing metadata in publisher/published_date; "
             fi
           }
-
+          
+          # 检查 proofread_date
           check_proofread() {
-            PROOFREAD_DATE=$(yq e '.proofread_date' "$1")
+            local PROOFREAD_ARTICLE="$1"
+            PROOFREAD_DATE=$(yq_extract 'proofread_date' "$PROOFREAD_ARTICLE")
+            
             if [ "$PROOFREAD_DATE" == "null" ]; then
-              ERROR=$ERROR"Missing proofread_date; "
+              ERROR=$ERROR"Missing metadata in proofread_date; "
             else
-              PUBLISHED_DATE=$(yq e '.published_date' "$1")
-              if [ "$PUBLISHED_DATE" != "null" ] && [ "$PUBLISHED_DATE" -lt "$PROOFREAD_DATE" ]; then
+              PUBLISHED_DATE=$(yq_extract 'published_date' "$PROOFREAD_ARTICLE")
+              if [ ! "$PUBLISHED_DATE" == "null" ] && [ "$PUBLISHED_DATE" -lt "$PROOFREAD_DATE" ]; then
                 ERROR=$ERROR"Published date is earlier than proofread date; "
               fi
             fi
           }
-
+          
+          # 检查 proofreader
           check_proofreading() {
-            PROOFREADER=$(yq e '.proofreader' "$1")
+            local PROOFREADING_ARTICLE="$1"
+            PROOFREADER=$(yq_extract 'proofreader' "$PROOFREADING_ARTICLE")
+            
             if [ "$PROOFREADER" == "null" ]; then
-              ERROR=$ERROR"Missing proofreader; "
+              ERROR=$ERROR"Missing metadata in proofreader; "
             else
               if [ "$STATUS" == "proofreading" ] || [ "$STATUS" == "proofread" ]; then
                 if [ "$PROOFREADER" != "$ACTOR_ID" ]; then
-                  ERROR=$ERROR"Proofreader is not the same as PR opener; "
+                  ERROR=$ERROR"Proofreader is not the same as the PR opener; "
                 fi
               fi
             fi
           }
-
+          
+          # 检查 translated_date
           check_translated() {
-            TRANSLATED_DATE=$(yq e '.translated_date' "$1")
+            local TRANSLATED_ARTICLE="$1"
+            TRANSLATED_DATE=$(yq_extract 'translated_date' "$TRANSLATED_ARTICLE")
+            
             if [ "$TRANSLATED_DATE" == "null" ]; then
-              ERROR=$ERROR"Missing translated_date; "
+              ERROR=$ERROR"Missing metadata in translated_date; "
             else
-              PROOFREAD_DATE=$(yq e '.proofread_date' "$1")
-              if [ "$PROOFREAD_DATE" != "null" ] && [ "$PROOFREAD_DATE" -lt "$TRANSLATED_DATE" ]; then
+              PROOFREAD_DATE=$(yq_extract 'proofread_date' "$TRANSLATED_ARTICLE")
+              if [ ! "$PROOFREAD_DATE" == "null" ] && [ "$PROOFREAD_DATE" -lt "$TRANSLATED_DATE" ]; then
                 ERROR=$ERROR"Proofread date is earlier than translated date; "
               fi
             fi
           }
-
+          
+          # 检查 translator
           check_translating() {
-            TRANSLATOR=$(yq e '.translator' "$1")
-            TRANSLATING_DATE=$(yq e '.translating_date' "$1")
+            local TRANSLATING_ARTICLE="$1"
+            TRANSLATOR=$(yq_extract 'translator' "$TRANSLATING_ARTICLE")
+            TRANSLATING_DATE=$(yq_extract 'translating_date' "$TRANSLATING_ARTICLE")
+            
             if [ "$TRANSLATOR" == "null" ]; then
-              ERROR=$ERROR"Missing translator; "
+              ERROR=$ERROR"Missing metadata in translator; "
             else
               if [ "$STATUS" == "translating" ] || [ "$STATUS" == "translated" ]; then
-                COLLECTED_DATE=$(yq e '.collected_date' "$1")
-                if [ "$TRANSLATING_DATE" != "null" ] && [ "$TRANSLATING_DATE" -lt "$COLLECTED_DATE" ]; then
-                  ERROR=$ERROR"Translating date earlier than collected date; "
+                COLLECTED_DATE=$(yq_extract 'collected_date' "$TRANSLATING_ARTICLE")
+                if [ ! "$TRANSLATING_DATE" == "null" ] && [ "$TRANSLATING_DATE" -lt "$COLLECTED_DATE" ]; then
+                  ERROR=$ERROR"Translating date is earlier than collected date;"
                 elif [ "$TRANSLATOR" != "$ACTOR_ID" ]; then
-                  ERROR=$ERROR"Translator is not the same as PR opener; "
+                  ERROR=$ERROR"Translator is not the same as the PR opener; "
                 fi
               fi
             fi
           }
-
+          
+          # 检查收集阶段的元数据
           check_collected() {
-            TITLE=$(yq e '.title' "$1")
-            AUTHOR=$(yq e '.author' "$1")
-            COLLECTOR=$(yq e '.collector' "$1")
-            COLLECTED_DATE=$(yq e '.collected_date' "$1")
-            LINK=$(yq e '.link' "$1")
+            local COLLECTED_ARTICLE="$1"
+            TITLE=$(yq_extract 'title' "$COLLECTED_ARTICLE")
+            AUTHOR=$(yq_extract 'author' "$COLLECTED_ARTICLE")
+            COLLECTOR=$(yq_extract 'collector' "$COLLECTED_ARTICLE")
+            COLLECTED_DATE=$(yq_extract 'collected_date' "$COLLECTED_ARTICLE")
+            LINK=$(yq_extract 'link' "$COLLECTED_ARTICLE")
+            
             if [ "$TITLE" == "null" ] || [ "$AUTHOR" == "null" ] || [ "$COLLECTOR" == "null" ] || [ "$COLLECTED_DATE" == "null" ] || [ "$LINK" == "null" ]; then
-              ERROR=$ERROR"Missing title/author/collector/collected_date/link; "
+              ERROR=$ERROR"Missing metadata in title/author/collector/collected_date/link; "
             else
-              TRANSLATED_DATE=$(yq e '.translated_date' "$1")
-              if [ "$TRANSLATED_DATE" != "null" ] && [ "$TRANSLATED_DATE" -lt "$COLLECTED_DATE" ]; then
-                ERROR=$ERROR"Translated date earlier than collected date; "
+              TRANSLATED_DATE=$(yq_extract 'translated_date' "$COLLECTED_ARTICLE")
+              if [ ! "$TRANSLATED_DATE" == "null" ] && [ "$TRANSLATED_DATE" -lt "$COLLECTED_DATE" ]; then
+                ERROR=$ERROR"Translated date is earlier than collected date; "
               fi
               if [ "$STATUS" == "collected" ]; then
                 if [ "$COLLECTOR" != "$ACTOR_ID" ]; then
-                  ERROR=$ERROR"Collector is not the same as PR opener; "
+                  ERROR=$ERROR"Collector is not the same as the PR opener; "
                 fi
               fi
             fi
           }
-
-          # -------------------------------
-          # 主逻辑
-          # -------------------------------
-          CHECK_PASSED=1
-          get_diff_article_files
           
-          echo "Found candidate article files: $ARTICLES"
-          echo "----------------------------"
+          CHECK_PASSED=1
+          
+          echo "Processing diff file: $DIFF_JSON"
+          
+          # --- 关键修复：添加 || true 避免 grep 失败时触发 set -e ---
+          # 使用 read -a 将文件列表安全地读取到 Bash 数组中 (ARTICLES_ARRAY)
+          IFS=$'\n' read -r -d '' -a ARTICLES_ARRAY < <(cat "$DIFF_JSON" | tr ' ' '\n' | grep '^sources/.*\.md$' || true)
+          
+          # 检查数组是否为空
+          if [ ${#ARTICLES_ARRAY[@]} -eq 0 ]; then
+             echo "No sources/*.md files were found in the changes. Exiting successfully."
+             exit 0
+          fi
 
-          for ARTICLE in $ARTICLES; do
-            echo "Checking article: $ARTICLE"
+          # 打印数组内容进行确认
+          echo "Files to check: ${ARTICLES_ARRAY[*]}"
+          
+          # 遍历数组中的文件
+          for ARTICLE in "${ARTICLES_ARRAY[@]}"; do
+            echo "--- Checking article: $ARTICLE ---"
             ERROR=""
-            check_filename_format "$ARTICLE"
+            
+            # 确保文件存在 (例如，如果文件被删除)
+            if [ ! -f "$ARTICLE" ]; then
+                echo "Warning: File $ARTICLE not found in current commit. Skipping metadata checks."
+                # 仅进行文件名格式检查
+                check_filename_format "$ARTICLE"
+                if [ -n "$ERROR" ]; then
+                    echo "  😭 File $ARTICLE check failed (Deleted/Renamed): $ERROR"
+                    CHECK_PASSED=0
+                else
+                    echo "  ✨ File $ARTICLE passed filename check."
+                fi
+                continue
+            fi
 
-            STATUS=$(yq e '.status' "$ARTICLE")
+            # Add the new filename format check
+            check_filename_format "$ARTICLE"
+            
+            STATUS=$(yq_extract 'status' "$ARTICLE")
+            
             case $STATUS in
               "published")
                 check_published "$ARTICLE"
-                ;&
+                ;;& # Fallthrough
               "proofread")
                 check_proofread "$ARTICLE"
-                ;&
+                ;;&
               "proofreading")
                 check_proofreading "$ARTICLE"
-                ;&
+                ;;&
               "translated")
                 check_translated "$ARTICLE"
-                ;&
+                ;;&
               "translating")
                 check_translating "$ARTICLE"
-                ;&
+                ;;&
               "collected")
                 check_collected "$ARTICLE"
                 ;;
               *)
-                ERROR="Invalid status: $STATUS"
+                ERROR=$ERROR"Invalid status: $STATUS"
                 ;;
             esac
-
+            
+            # Printlog for each article
             if [ -z "$ERROR" ]; then
               echo "  ✨ All checks passed for $STATUS $ARTICLE"
             else
@@ -199,6 +239,7 @@ jobs:
             fi
           done
           
+          # Print overall result
           if [ $CHECK_PASSED -eq 0 ]; then
             echo "❌ Some checks failed. Please fix the article(s) before merging the PR."
             exit 1
