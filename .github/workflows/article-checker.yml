@@ -178,6 +178,7 @@ jobs:
           }
           
           CHECK_PASSED=1 # To check if all the articles pass
+          echo $DIFF_JSON
           get_diff_article_files
           
           for ARTICLE in $FILES; do
