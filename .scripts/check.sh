@@ -1,6 +1,5 @@
 #!/bin/bash
 
-set -x
 
 # Get valid files in git diff (markdown files in sources/)
 get_diff_article_files() {
