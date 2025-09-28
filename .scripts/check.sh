@@ -6,14 +6,7 @@ set -e
 # Get valid files in git diff (markdown files in sources/)
 get_diff_article_files() {
   FILES=$(cat $DIFF_JSON | yq e '.files[].path' - )
-  ARTICLES=''
-  for FILE in $FILES; do
-    # 匹配所有子目录
-    if [[ "$FILE" == sources/**/*.md ]]; then
-      ARTICLES="$ARTICLES $FILE"
-    fi
-  done
-  if [ -z "$ARTICLES" ]; then
+  if [ -z "$FILES" ]; then
     echo "No valid articles found in the PR. Skip checks."
     exit 0
   fi
