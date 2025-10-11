@@ -10,7 +10,7 @@ get_diff_article_files() {
     FILES=$(jq -r '.files[].path' "$DIFF_JSON") 
 
 
-    echo $FILES
+    echo $FILES 
 
     ARTICLES=''
     
