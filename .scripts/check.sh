@@ -5,13 +5,26 @@ get_diff_article_files() {
   FILES=$(cat $DIFF_JSON | yq e '.files[].path' - )
   ARTICLES=''
   for FILE in $FILES; do
-    if [[ "$FILE" == sources/*.md ]]; then # Seems duplicated with action path filter, keeping for safety
+    if [[ "$FILE" =~ ^sources/.*\.md$ ]]; then # Seems duplicated with action path filter, keeping for safety
       ARTICLES="$ARTICLES $FILE"
     fi
   done
   if [ -z "$ARTICLES" ]; then
     echo "No valid articles found in the PR. Skip checks."
     exit 0
+  fi
+}
+
+# Check if the filename is in Kebab case
+check_filename() {
+  FILENAME_ARTICLE=$1
+  FILENAME_WITH_EXT=$(basename $FILENAME_ARTICLE)
+  FILENAME=${FILENAME_WITH_EXT%.md}
+  # The regex is /^[a-z]+(-[a-z]+)*$/
+  # It allows only lowercase ASCII letters and hyphens, and must start and end with a letter.
+  REGEX="^[a-z]+(-[a-z]+)*$"
+  if [[ "$FILENAME_WITH_EXT" != "README.md" ]] && [[ ! $FILENAME =~ $REGEX ]]; then
+    ERROR=$ERROR"Filename of '$FILENAME_ARTICLE' is not in Kebab case (e.g. 'my-article-name.md'); "
   fi
 }
 
@@ -128,6 +141,7 @@ get_diff_article_files
 for ARTICLE in $ARTICLES; do
   echo "Checking article: $ARTICLE"
   ERROR=""
+  check_filename $ARTICLE
   STATUS=$(yq -f extract '.status' $ARTICLE)
   case $STATUS in
     "published")
