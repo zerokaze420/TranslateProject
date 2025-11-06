@@ -12,7 +12,7 @@ Ghidra Filesystem Storage
 
 Introduction
 ------------
-
+  
 The purpose of this document is to provide technical details of the file
 storage scheme(s) employed by both Ghidra projects and Ghidra Server
 repositories. As of this writing Ghidra has employed two different local

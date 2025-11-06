@@ -10,7 +10,7 @@ link: https://staticthinking.wordpress.com/2022/04/28/free-the-last-thing-style/
 ---
 
 # 释放最后对象风格
-
+ 
 上个月，一位著名的建筑师 Christopher Alexander 去世了。他意识到一个现象：优秀的建筑往往会被模仿，而糟糕的建筑则会被拆除。因此，他研究古老的建筑，试图找出优秀建筑共有的模式。他创造了“模式语言”（pattern language）这个术语来描述那些被模仿的优秀模式。我不知道 Christopher Alexander 是否讨论过反面模式（anti-patterns），但反面模式指的是那些本身很糟糕、却仍被人们反复模仿的想法。
 
 内核中存在多种错误处理风格。这些都不是我发明的，我像 Christopher Alexander 一样，只是研究那些已经存在的东西。我只是起了个名字。
