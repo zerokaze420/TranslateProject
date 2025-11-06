@@ -1,17 +1,28 @@
 #!/bin/bash
 
+
+set -e 
+
 # Get valid files in git diff (markdown files in sources/)
 get_diff_article_files() {
   FILES=$(cat $DIFF_JSON | yq e '.files[].path' - )
   ARTICLES=''
   for FILE in $FILES; do
-    if [[ "$FILE" == sources/*.md ]]; then # Seems duplicated with action path filter, keeping for safety
+    # 匹配所有子目录
+    if [[ "$FILE" == sources/**/*.md ]]; then
       ARTICLES="$ARTICLES $FILE"
     fi
   done
   if [ -z "$ARTICLES" ]; then
     echo "No valid articles found in the PR. Skip checks."
     exit 0
+  fi
+}
+# Check if filename format is valid (lower case letters and hyphens only)
+check_filename_format() {
+  FILENAME=$(basename "$1" .md)
+  if [[ ! "$FILENAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    ERROR=$ERROR"Invalid filename format. Filename should only contain lowercase letters, numbers, and hyphens; "
   fi
 }
 
@@ -25,10 +36,10 @@ check_published() {
   # Comment this check since it's good to give a last chance for people
   # to fix some minor issues missed in the previous stages
   # else
-  #   # No stage check needed for the final stage
-  #   if [ "$PUBLISHER" != "$ACTOR_ID" ]; then
-  #     ERROR=$ERROR"Publisher is not the same as the PR opener; "
-  #   fi
+  #    # No stage check needed for the final stage
+  #    if [ "$PUBLISHER" != "$ACTOR_ID" ]; then
+  #       ERROR=$ERROR"Publisher is not the same as the PR opener; "
+  #    fi
   fi
 }
 
@@ -128,6 +139,9 @@ get_diff_article_files
 for ARTICLE in $ARTICLES; do
   echo "Checking article: $ARTICLE"
   ERROR=""
+  # Add the new filename format check
+  check_filename_format $ARTICLE
+
   STATUS=$(yq -f extract '.status' $ARTICLE)
   case $STATUS in
     "published")
@@ -168,4 +182,3 @@ else
   echo "✅ All checks passed. You can merge the PR now."
   exit 0
 fi
-
